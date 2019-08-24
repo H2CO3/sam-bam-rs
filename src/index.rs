@@ -92,3 +92,26 @@ impl Display for Index {
         }
     }
 }
+
+pub fn region_to_bin(beg: i32, end: i32) -> u32 {
+    let end = end - 1;
+    let mut res = 0_i32;
+    for i in (14..27).step_by(3) {
+        if beg >> i == end >> i {
+            res = ((1 << (29 - i)) - 1) / 7 + (beg >> i);
+            break;
+        }
+    }
+    res as u32
+}
+
+pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
+    let end = end - 1;
+    let mut res = vec![0];
+    let mut t = 0;
+    for i in 0..5 {
+        t += 1 << (i * 3);
+        res.extend((t + (beg >> (26 - 3 * i))) as u32..=(t + (end >> (26 - 3 * i))) as u32);
+    }
+    res
+}
