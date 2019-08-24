@@ -1,5 +1,9 @@
 use std::io::{Result, Error};
 use std::io::ErrorKind::InvalidData;
+use std::path::Path;
+use std::fs::File;
+use std::fmt::{self, Display, Formatter};
+use std::result;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -19,6 +23,12 @@ impl Bin {
     }
 }
 
+impl Display for Bin {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        write!(f, "Bin {} {:?}", self.bin_id, self.chunks)
+    }
+}
+
 struct Reference {
     bins: Vec<Bin>,
     intervals: Vec<u64>,
@@ -32,6 +42,15 @@ impl Reference {
         let mut intervals = vec![0_u64; n_intervals as usize];
         stream.read_u64_into::<LittleEndian>(&mut intervals)?;
         Ok(Reference { bins, intervals })
+    }
+}
+
+impl Display for Reference {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        writeln!(f, "    Bins:")?;
+        self.bins.iter().map(|bin| writeln!(f, "        {}", bin))
+            .collect::<result::Result<_, _>>()?;
+        writeln!(f, "    Intervals: {:?}", self.intervals)
     }
 }
 
@@ -52,5 +71,24 @@ impl Index {
         let references = (0..n_ref).map(|_| Reference::new(&mut stream)).collect::<Result<_>>()?;
         let n_unmapped = stream.read_u64::<LittleEndian>().ok();
         Ok(Index { references, n_unmapped })
+    }
+
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Index> {
+        let f = File::open(&path)?;
+        Index::new(f)
+    }
+}
+
+impl Display for Index {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        for (i, reference) in self.references.iter().enumerate() {
+            writeln!(f, "Reference {}:", i)?;
+            reference.fmt(f)?;
+        }
+        write!(f, "Unmapped reads: ")?;
+        match self.n_unmapped {
+            Some(count) => writeln!(f, "{}", count),
+            None => writeln!(f, "Unknown")
+        }
     }
 }
