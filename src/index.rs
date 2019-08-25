@@ -7,17 +7,40 @@ use std::result;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+#[derive(Clone, Copy)]
+struct VirtualOffset(u64);
+
+impl VirtualOffset {
+    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+        Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
+    }
+
+    fn compr_offset(&self) -> u64 {
+        self.0 >> 16
+    }
+
+    fn uncompr_offset(&self) -> u16 {
+        self.0 as u16
+    }
+}
+
+impl Display for VirtualOffset {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        write!(f, "{}(c={},u={})", self.0, self.compr_offset(), self.uncompr_offset())
+    }
+}
+
 struct Bin {
     bin_id: u32,
-    chunks: Vec<(u64, u64)>,
+    chunks: Vec<(VirtualOffset, VirtualOffset)>,
 }
 
 impl Bin {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         let bin_id = stream.read_u32::<LittleEndian>()?;
         let n_chunks = stream.read_i32::<LittleEndian>()?;
-        let chunks = (0..n_chunks).map(|_| -> Result<(u64, u64)> {
-                Ok((stream.read_u64::<LittleEndian>()?, stream.read_u64::<LittleEndian>()?))
+        let chunks = (0..n_chunks).map(|_| -> Result<(VirtualOffset, VirtualOffset)> {
+                Ok((VirtualOffset::new(stream)?, VirtualOffset::new(stream)?))
             }).collect::<Result<_>>()?;
         Ok(Bin { bin_id, chunks })
     }
@@ -25,7 +48,10 @@ impl Bin {
 
 impl Display for Bin {
     fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
-        write!(f, "Bin {} {:?}", self.bin_id, self.chunks)
+        write!(f, "Bin {}:  ", self.bin_id)?;
+        self.chunks.iter().enumerate().map(|(i, (start, end))|
+            write!(f, "{}{{{}__{}}}", if i > 0 { ",  " } else { "" }, start, end))
+            .collect::<result::Result<_, _>>()
     }
 }
 
