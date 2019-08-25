@@ -4,6 +4,7 @@ use std::path::Path;
 use std::fs::File;
 use std::fmt::{self, Display, Formatter};
 use std::result;
+use std::collections::HashMap;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -26,7 +27,7 @@ impl VirtualOffset {
 
 impl Display for VirtualOffset {
     fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
-        write!(f, "{}(c={},u={})", self.0, self.compr_offset(), self.uncompr_offset())
+        write!(f, "c={},u={}", self.compr_offset(), self.uncompr_offset())
     }
 }
 
@@ -56,27 +57,29 @@ impl Display for Bin {
 }
 
 struct Reference {
-    bins: Vec<Bin>,
-    intervals: Vec<u64>,
+    bins: HashMap<u32, Bin>,
 }
 
 impl Reference {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         let n_bins = stream.read_i32::<LittleEndian>()?;
-        let bins = (0..n_bins).map(|_| Bin::new(stream)).collect::<Result<_>>()?;
+        let bins = (0..n_bins).map(|_| {
+            let bin = Bin::new(stream)?;
+            Ok((bin.bin_id, bin))
+        }).collect::<Result<_>>()?;
         let n_intervals = stream.read_i32::<LittleEndian>()?;
+        // Linear index is not used in the current version
         let mut intervals = vec![0_u64; n_intervals as usize];
         stream.read_u64_into::<LittleEndian>(&mut intervals)?;
-        Ok(Reference { bins, intervals })
+        Ok(Reference { bins })
     }
 }
 
 impl Display for Reference {
     fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
         writeln!(f, "    Bins:")?;
-        self.bins.iter().map(|bin| writeln!(f, "        {}", bin))
-            .collect::<result::Result<_, _>>()?;
-        writeln!(f, "    Intervals: {:?}", self.intervals)
+        self.bins.values().map(|bin| writeln!(f, "        {}", bin))
+            .collect::<result::Result<_, _>>()
     }
 }
 
@@ -124,7 +127,7 @@ pub fn region_to_bin(beg: i32, end: i32) -> u32 {
     let mut res = 0_i32;
     for i in (14..27).step_by(3) {
         if beg >> i == end >> i {
-            res = ((1 << (29 - i)) - 1) / 7 + (beg >> i);
+            res = ((1 << 29 - i) - 1) / 7 + (beg >> i);
             break;
         }
     }
@@ -137,7 +140,19 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     let mut t = 0;
     for i in 0..5 {
         t += 1 << (i * 3);
-        res.extend((t + (beg >> (26 - 3 * i))) as u32..=(t + (end >> (26 - 3 * i))) as u32);
+        let mut start = (t + (beg >> 26 - 3 * i)) as u32;
+        if start == res[res.len() - 1] {
+            start += 1;
+        }
+        let end = (t + (end >> 26 - 3 * i)) as u32;
+        res.extend(start..=end);
     }
     res
+}
+
+pub struct ChunkIterator<'a> {
+    bins: Vec<u32>,
+    bin_ix: usize,
+    reference: &'a Reference,
+    chunk_ix: usize,
 }
