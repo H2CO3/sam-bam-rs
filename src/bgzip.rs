@@ -5,6 +5,9 @@ use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
+use lru_cache::LruCache;
+
+use super::index::Chunk;
 
 const MAX_BLOCK_SIZE: usize = 65536_usize;
 
@@ -103,12 +106,23 @@ impl Block {
         }
         Err(Error::new(InvalidData, "bgzip::Block has an invalid header"))
     }
+
+    pub fn contents(&self, start: u16, end: Option<u16>) -> &[u8] {
+        match end {
+            Some(value) => &self.uncompr_data[start as usize..value as usize],
+            None => &self.uncompr_data[start as usize..],
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.uncompr_data.len()
+    }
 }
 
 pub struct Reader<R: Read + Seek> {
     stream: R,
     current_offset: u64,
-    block: Block,
+    cache: LruCache<u64, Block>,
     reading_buffer: Vec<u8>,
 }
 
@@ -120,22 +134,84 @@ impl Reader<File> {
     }
 }
 
+const LRU_CAPACITY: usize = 1000_usize;
+
 impl<R: Read + Seek> Reader<R> {
     pub fn new(stream: R) -> Result<Self> {
         Ok(Reader {
             stream,
             current_offset: 0,
-            block: Block::new(),
+            cache: LruCache::new(LRU_CAPACITY),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
         })
     }
 
     pub fn get_block<'a>(&'a mut self, offset: u64) -> Result<&'a Block> {
+        if self.cache.contains_key(&offset) {
+            return Ok(self.cache.get_mut(&offset)
+                .expect("Cache should contain the requested block"));
+        }
+
         if offset != self.current_offset {
             self.stream.seek(SeekFrom::Start(offset))?;
             self.current_offset = offset;
         }
-        self.block.fill(&mut self.stream, &mut self.reading_buffer)?;
-        Ok(&self.block)
+        
+        let mut block = Block::new();
+        block.fill(&mut self.stream, &mut self.reading_buffer)?;
+        self.cache.insert(offset, block);
+        Ok(self.cache.get_mut(&offset).expect("Cache should contain the requested block"))
+    }
+
+    // pub fn chunks_iter(&mut self, chunks: Vec<Chunk>) {
+    //     chunks.into_iter().flat_map(|chunk| )
+    // }
+
+    // fn chunk_iter(&mut self, chunk: Chunk) -> Result<impl Iterator<Item = u8>> {
+    //     let start_compr_offset = chunk.start().compr_offset();
+    //     let end_compr_offset = chunk.end().compr_offset();
+    //     (start_compr_offset..=end_compr_offset).flat_map(|compr_offset| {
+    //         let start = if compr_offset == start_compr_offset {
+    //             chunk.start().uncompr_offset()
+    //         } else {
+    //             0
+    //         };
+    //         let end = if compr_offset == end_compr_offset {
+    //             Some(chunk.end().uncompr_offset())
+    //         } else {
+    //             None
+    //         };
+            
+    //         // if end == start {
+    //         //     (&[]).iter()
+    //         // } else 
+
+    //         let block = self.get_block(compr_offset);
+    //         block.contents(start, end).iter()
+    //     })
+    // }
+}
+
+struct ChunksReader<'a, R: Read + Seek> {
+    reader: &'a mut Reader<R>,
+    current_block: Option<&'a Block>,
+    in_block_pos: u16,
+    chunks: Vec<Chunk>,
+    chunk_ix: usize,
+}
+
+impl<'a, R: Read + Seek> ChunksReader<'a, R> {
+    fn new(reader: &'a mut Reader<R>, chunks: Vec<Chunk>) -> Self {
+        let res = ChunksReader {
+            reader,
+            current_block: None,
+            in_block_pos: 0,
+            chunks,
+            chunk_ix: 0,
+        };
+        // res.current_block = Some(res.reader.get_block(0).unwrap());
+        res
     }
 }
+
+// impl<'a, R: Read + Seek> Read for ChunksReader

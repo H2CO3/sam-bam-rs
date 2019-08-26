@@ -12,18 +12,26 @@ use byteorder::{LittleEndian, ReadBytesExt};
 // Virtual Offset
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct VirtualOffset(u64);
+pub struct VirtualOffset(u64);
 
 impl VirtualOffset {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
-    fn compr_offset(&self) -> u64 {
+    fn from(compr_offset: u64, uncompr_offset: u16) -> Self {
+        VirtualOffset(compr_offset << 16 | uncompr_offset as u64)
+    }
+
+    pub fn raw(&self) -> u64 {
+        self.0
+    }
+
+    pub fn compr_offset(&self) -> u64 {
         self.0 >> 16
     }
 
-    fn uncompr_offset(&self) -> u16 {
+    pub fn uncompr_offset(&self) -> u16 {
         self.0 as u16
     }
 }
@@ -38,7 +46,7 @@ impl Display for VirtualOffset {
 // Chunk
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Chunk {
+pub struct Chunk {
     start: VirtualOffset,
     end: VirtualOffset,
 }
@@ -60,6 +68,14 @@ impl Chunk {
             start: min(self.start, other.start),
             end: max(self.end, other.end),
         }
+    }
+
+    pub fn start(&self) -> VirtualOffset {
+        self.start
+    }
+
+    pub fn end(&self) -> VirtualOffset {
+        self.end
     }
 }
 
@@ -113,22 +129,6 @@ impl Reference {
         stream.read_u64_into::<LittleEndian>(&mut intervals)?;
         Ok(Reference { bins })
     }
-
-    fn print_chunks(&self) {
-        let mut chunks = Vec::new();
-        for bin in self.bins.values() {
-            if bin.bin_id != SUMMARY_BIN {
-                chunks.extend(bin.chunks.iter());
-            }
-        }
-        chunks.sort();
-        for (i, chunk) in chunks.iter().enumerate() {
-            if i > 0 && chunks[i - 1].intersects(chunk) {
-                println!("Intersects!!!");
-            }
-            println!("    {}", chunk);
-        }
-    }
 }
 
 impl Display for Reference {
@@ -163,11 +163,30 @@ impl Index {
         Index::new(f)
     }
 
-    pub fn print_chunks(&self) {
-        for (i, reference) in self.references.iter().enumerate() {
-            println!("Reference {}:", i);
-            reference.print_chunks();
+    pub fn fetch_chunks(&self, ref_id: i32, start: i32, end: i32) -> Vec<Chunk> {
+        let mut chunks = Vec::new();
+        for bin_id in region_to_bins(start, end).into_iter() {
+            if let Some(bin_chunks) = self.references[ref_id as usize].bins.get(&bin_id) {
+                chunks.extend(bin_chunks.chunks.iter());
+            }
         }
+        let mut res = Vec::new();
+        if chunks.is_empty() {
+            return res;
+        }
+
+        chunks.sort();
+        let mut curr = chunks[0].clone();
+        for i in 1..chunks.len() {
+            if !curr.intersects(&chunks[i]) {
+                res.push(curr);
+                curr = chunks[i].clone();
+            } else {
+                curr = curr.combine(&chunks[i]);
+            }
+        }
+        res.push(curr);
+        res
     }
 }
 
@@ -209,9 +228,3 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     }
     res
 }
-
-// pub struct ChunkIterator<'a> {
-//     reference_id: i32,
-//     chunks: Vec<Chunk>,
-//     chunk_ix: usize,
-// }
