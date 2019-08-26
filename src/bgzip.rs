@@ -10,7 +10,7 @@ use lru_cache::LruCache;
 
 use super::index::Chunk;
 
-const MAX_BLOCK_SIZE: usize = 65536_usize;
+const MAX_BLOCK_SIZE: usize = 65536;
 
 fn as_u16(buffer: &[u8], start: usize) -> u16 {
     buffer[start] as u16 + ((buffer[start + 1] as u16) << 8)
@@ -140,7 +140,7 @@ impl Reader<File> {
     }
 }
 
-const LRU_CAPACITY: usize = 1000_usize;
+const LRU_CAPACITY: usize = 1000;
 
 impl<R: Read + Seek> Reader<R> {
     pub fn new(stream: R) -> Result<Self> {
@@ -212,8 +212,8 @@ impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
         buf.copy_from_slice(block.contents(self.in_block_offset, self.in_block_offset + bytes));
         
         self.in_block_offset += bytes;
-        if (chunk.end().compr_offset() == self.block_offset
-                && self.in_block_offset == chunk.end().uncompr_offset() as usize) {
+        if chunk.end().compr_offset() == self.block_offset
+                && self.in_block_offset == chunk.end().uncompr_offset() as usize {
             // Last block in a chunk
             self.chunk_ix += 1;
         } else if block.uncompressed_size() == self.in_block_offset {

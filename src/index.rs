@@ -114,7 +114,7 @@ struct Reference {
     bins: HashMap<u32, Bin>,
 }
 
-const SUMMARY_BIN: u32 = 37450_u32;
+const SUMMARY_BIN: u32 = 37450;
 
 impl Reference {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
