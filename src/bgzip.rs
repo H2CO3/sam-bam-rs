@@ -1,17 +1,10 @@
-use std::fs;
-use std::io::{Read, Seek, Result, Error};
+use std::fs::File;
+use std::io::{Read, Seek, Result, Error, SeekFrom};
 use std::io::ErrorKind::InvalidData;
+use std::path::Path;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
-
-struct Reader<R: Read + Seek> {
-    stream: R,
-}
-
-struct Block {
-
-}
 
 const MAX_BLOCK_SIZE: usize = 65536_usize;
 
@@ -19,41 +12,56 @@ fn as_u16(buffer: &[u8], start: usize) -> u16 {
     buffer[start] as u16 + ((buffer[start + 1] as u16) << 8)
 }
 
+pub struct Block {
+    uncompr_data: Vec<u8>,
+}
+
 impl Block {
-    fn from_stream<R: Read>(stream: &mut R, compr_buf: &mut Vec<u8>, uncompr_buf: &mut Vec<u8>)
-            -> Result<Self> {
-        debug_assert!(compr_buf.len() >= MAX_BLOCK_SIZE);
-        debug_assert!(uncompr_buf.capacity() >= MAX_BLOCK_SIZE);
-        uncompr_buf.clear();
+    fn new() -> Block {
+        Block {
+            uncompr_data: Vec::with_capacity(MAX_BLOCK_SIZE),
+        }
+    }
+
+    /// Load bgzip block from `stream` into `self`. Returns the loaded block size
+    ///
+    /// # Arguments
+    ///
+    /// * `reading_buffer` - Buffer for reading the compressed block.
+    ///     It should have length >= `MAX_BLOCK_SIZE`
+    fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<usize> {
+        debug_assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
+        debug_assert!(self.uncompr_data.capacity() >= MAX_BLOCK_SIZE);
+        self.uncompr_data.clear();
 
         let extra_length = {
-            let mut header = &mut compr_buf[..12];
+            let header = &mut reading_buffer[..12];
             stream.read_exact(header)
                 .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
             // TODO: Try read header and extra fields simultaniously
             Block::analyze_header(header)? as usize
         };
         let block_size = {
-            let mut extra_fields = &mut compr_buf[12..12 + extra_length];
+            let extra_fields = &mut reading_buffer[12..12 + extra_length];
             stream.read_exact(extra_fields)
                 .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
             Block::analyze_extra_fields(extra_fields)? as usize + 1
         };
 
-        stream.read_exact(&mut compr_buf[12 + extra_length..block_size])
+        stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
-        let mut decoder = deflate::Decoder::new(&compr_buf[12 + extra_length..block_size - 8]);
-        let obs_uncompr_size = decoder.read_to_end(uncompr_buf)
+        let mut decoder = deflate::Decoder::new(&reading_buffer[12 + extra_length..block_size - 8]);
+        let obs_uncompr_size = decoder.read_to_end(&mut self.uncompr_data)
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
         
-        let exp_crc32 = (&compr_buf[block_size - 8..block_size - 4])
+        let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::new(e.kind(), format!("Corrupted bgzip block ({})", e)))?;
-        let exp_uncompr_size = (&compr_buf[block_size - 4..block_size])
+        let exp_uncompr_size = (&reading_buffer[block_size - 4..block_size])
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
 
-        let obs_crc32 = crc::crc32::checksum_ieee(uncompr_buf);
+        let obs_crc32 = crc::crc32::checksum_ieee(&self.uncompr_data);
         if obs_crc32 != exp_crc32 {
             return Err(Error::new(InvalidData,
                 format!("Corrupted bgzip block. CRC do not match: expected {}, observed {}",
@@ -64,8 +72,8 @@ impl Block {
                 format!("Corrupted bgzip block. Uncompressed size do not: expected {}, observed {}",
                 exp_uncompr_size, obs_uncompr_size)));
         }
-
-        unimplemented!();
+        debug_assert!(obs_uncompr_size == self.uncompr_data.len());
+        Ok(block_size)
     }
 
     /// Analyzes 12 heades bytes of a block.
@@ -94,5 +102,40 @@ impl Block {
             i += 4 + subfield_len as usize;
         }
         Err(Error::new(InvalidData, "bgzip::Block has an invalid header"))
+    }
+}
+
+pub struct Reader<R: Read + Seek> {
+    stream: R,
+    current_offset: u64,
+    block: Block,
+    reading_buffer: Vec<u8>,
+}
+
+impl Reader<File> {
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let stream = File::open(path)
+            .map_err(|e| Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
+        Reader::new(stream)
+    }
+}
+
+impl<R: Read + Seek> Reader<R> {
+    pub fn new(stream: R) -> Result<Self> {
+        Ok(Reader {
+            stream,
+            current_offset: 0,
+            block: Block::new(),
+            reading_buffer: vec![0; MAX_BLOCK_SIZE],
+        })
+    }
+
+    pub fn get_block<'a>(&'a mut self, offset: u64) -> Result<&'a Block> {
+        if offset != self.current_offset {
+            self.stream.seek(SeekFrom::Start(offset))?;
+            self.current_offset = offset;
+        }
+        self.block.fill(&mut self.stream, &mut self.reading_buffer)?;
+        Ok(&self.block)
     }
 }
