@@ -3,6 +3,7 @@ use std::io::{Read, Seek, Result, Error};
 use std::io::ErrorKind::InvalidData;
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use libflate::deflate;
 
 struct Reader<R: Read + Seek> {
     stream: R,
@@ -19,25 +20,50 @@ fn as_u16(buffer: &[u8], start: usize) -> u16 {
 }
 
 impl Block {
-    fn from_stream<R: Read>(stream: &mut R, buffer: &mut Vec<u8>) -> Result<Self> {
-        debug_assert!(buffer.len() >= MAX_BLOCK_SIZE);
+    fn from_stream<R: Read>(stream: &mut R, compr_buf: &mut Vec<u8>, uncompr_buf: &mut Vec<u8>)
+            -> Result<Self> {
+        debug_assert!(compr_buf.len() >= MAX_BLOCK_SIZE);
+        debug_assert!(uncompr_buf.capacity() >= MAX_BLOCK_SIZE);
+        uncompr_buf.clear();
+
         let extra_length = {
-            let mut header = &mut buffer[..12];
+            let mut header = &mut compr_buf[..12];
             stream.read_exact(header)
                 .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
             // TODO: Try read header and extra fields simultaniously
             Block::analyze_header(header)? as usize
         };
         let block_size = {
-            let mut extra_fields = &mut buffer[12..12 + extra_length];
+            let mut extra_fields = &mut compr_buf[12..12 + extra_length];
             stream.read_exact(extra_fields)
                 .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
             Block::analyze_extra_fields(extra_fields)? as usize + 1
         };
 
-        stream.read_exact(&mut buffer[12 + extra_length..block_size])
+        stream.read_exact(&mut compr_buf[12 + extra_length..block_size])
+            .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
+        let mut decoder = deflate::Decoder::new(&compr_buf[12 + extra_length..block_size - 8]);
+        let obs_uncompr_size = decoder.read_to_end(uncompr_buf)
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
         
+        let exp_crc32 = (&compr_buf[block_size - 8..block_size - 4])
+            .read_u32::<LittleEndian>()
+            .map_err(|e| Error::new(e.kind(), format!("Corrupted bgzip block ({})", e)))?;
+        let exp_uncompr_size = (&compr_buf[block_size - 4..block_size])
+            .read_u32::<LittleEndian>()
+            .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
+
+        let obs_crc32 = crc::crc32::checksum_ieee(uncompr_buf);
+        if obs_crc32 != exp_crc32 {
+            return Err(Error::new(InvalidData,
+                format!("Corrupted bgzip block. CRC do not match: expected {}, observed {}",
+                exp_crc32, obs_crc32)));
+        }
+        if exp_uncompr_size as usize != obs_uncompr_size {
+            return Err(Error::new(InvalidData,
+                format!("Corrupted bgzip block. Uncompressed size do not: expected {}, observed {}",
+                exp_uncompr_size, obs_uncompr_size)));
+        }
 
         unimplemented!();
     }

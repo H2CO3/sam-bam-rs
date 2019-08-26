@@ -210,9 +210,8 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     res
 }
 
-pub struct ChunkIterator<'a> {
-    bins: Vec<u32>,
-    bin_ix: usize,
-    reference: &'a Reference,
-    chunk_ix: usize,
-}
+// pub struct ChunkIterator<'a> {
+//     reference_id: i32,
+//     chunks: Vec<Chunk>,
+//     chunk_ix: usize,
+// }
