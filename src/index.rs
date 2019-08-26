@@ -5,10 +5,13 @@ use std::fs::File;
 use std::fmt::{self, Display, Formatter};
 use std::result;
 use std::collections::HashMap;
+use std::cmp::{min, max};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-#[derive(Clone, Copy)]
+// Virtual Offset
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct VirtualOffset(u64);
 
 impl VirtualOffset {
@@ -31,18 +34,53 @@ impl Display for VirtualOffset {
     }
 }
 
+
+// Chunk
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Chunk {
+    start: VirtualOffset,
+    end: VirtualOffset,
+}
+
+impl Chunk {
+    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+        let start = VirtualOffset::new(stream)?;
+        let end = VirtualOffset::new(stream)?;
+        Ok(Chunk { start, end })
+    }
+
+    fn intersects(&self, other: &Chunk) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    fn combine(&self, other: &Chunk) -> Chunk {
+        assert!(self.intersects(other), "Cannot combine non-intersecting chunks");
+        Chunk {
+            start: min(self.start, other.start),
+            end: max(self.end, other.end),
+        }
+    }
+}
+
+impl Display for Chunk {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        write!(f, "{{{}__{}}}", self.start, self.end)
+    }
+}
+
+// Bin
+
 struct Bin {
     bin_id: u32,
-    chunks: Vec<(VirtualOffset, VirtualOffset)>,
+    chunks: Vec<Chunk>,
 }
 
 impl Bin {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         let bin_id = stream.read_u32::<LittleEndian>()?;
         let n_chunks = stream.read_i32::<LittleEndian>()?;
-        let chunks = (0..n_chunks).map(|_| -> Result<(VirtualOffset, VirtualOffset)> {
-                Ok((VirtualOffset::new(stream)?, VirtualOffset::new(stream)?))
-            }).collect::<Result<_>>()?;
+        let chunks = (0..n_chunks).map(|_| Chunk::new(stream)).collect::<Result<_>>()?;
         Ok(Bin { bin_id, chunks })
     }
 }
@@ -50,8 +88,8 @@ impl Bin {
 impl Display for Bin {
     fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
         write!(f, "Bin {}:  ", self.bin_id)?;
-        self.chunks.iter().enumerate().map(|(i, (start, end))|
-            write!(f, "{}{{{}__{}}}", if i > 0 { ",  " } else { "" }, start, end))
+        self.chunks.iter().enumerate()
+            .map(|(i, chunk)| write!(f, "{}{}", if i > 0 { ",  " } else { "" }, chunk))
             .collect::<result::Result<_, _>>()
     }
 }
@@ -59,6 +97,8 @@ impl Display for Bin {
 struct Reference {
     bins: HashMap<u32, Bin>,
 }
+
+const SUMMARY_BIN: u32 = 37450_u32;
 
 impl Reference {
     fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
@@ -72,6 +112,22 @@ impl Reference {
         let mut intervals = vec![0_u64; n_intervals as usize];
         stream.read_u64_into::<LittleEndian>(&mut intervals)?;
         Ok(Reference { bins })
+    }
+
+    fn print_chunks(&self) {
+        let mut chunks = Vec::new();
+        for bin in self.bins.values() {
+            if bin.bin_id != SUMMARY_BIN {
+                chunks.extend(bin.chunks.iter());
+            }
+        }
+        chunks.sort();
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i > 0 && chunks[i - 1].intersects(chunk) {
+                println!("Intersects!!!");
+            }
+            println!("    {}", chunk);
+        }
     }
 }
 
@@ -105,6 +161,13 @@ impl Index {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Index> {
         let f = File::open(&path)?;
         Index::new(f)
+    }
+
+    pub fn print_chunks(&self) {
+        for (i, reference) in self.references.iter().enumerate() {
+            println!("Reference {}:", i);
+            reference.print_chunks();
+        }
     }
 }
 
@@ -140,10 +203,7 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     let mut t = 0;
     for i in 0..5 {
         t += 1 << (i * 3);
-        let mut start = (t + (beg >> 26 - 3 * i)) as u32;
-        if start == res[res.len() - 1] {
-            start += 1;
-        }
+        let start = (t + (beg >> 26 - 3 * i)) as u32;
         let end = (t + (end >> 26 - 3 * i)) as u32;
         res.extend(start..=end);
     }
