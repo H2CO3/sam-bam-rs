@@ -127,7 +127,6 @@ impl Block {
 
 pub struct Reader<R: Read + Seek> {
     stream: R,
-    current_offset: u64,
     cache: LruCache<u64, Block>,
     reading_buffer: Vec<u8>,
 }
@@ -146,7 +145,6 @@ impl<R: Read + Seek> Reader<R> {
     pub fn new(stream: R) -> Result<Self> {
         Ok(Reader {
             stream,
-            current_offset: 0,
             cache: LruCache::new(LRU_CAPACITY),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
         })
@@ -158,11 +156,7 @@ impl<R: Read + Seek> Reader<R> {
                 .expect("Cache should contain the requested block"));
         }
 
-        if offset != self.current_offset {
-            self.stream.seek(SeekFrom::Start(offset))?;
-            self.current_offset = offset;
-        }
-        
+        self.stream.seek(SeekFrom::Start(offset))?;
         let mut block = Block::new();
         block.fill(&mut self.stream, &mut self.reading_buffer)?;
         self.cache.insert(offset, block);

@@ -2,6 +2,108 @@ use std::io::{self, Read, ErrorKind};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+pub enum IntegerType {
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
+}
+
+pub enum TagValue {
+    Int(i64, IntegerType),
+    Float(f32),
+    String(Vec<u8>),
+    Hex(Vec<u8>),
+    IntArray(Vec<i64>, IntegerType),
+    FloatArray(Vec<f32>),
+}
+
+impl TagValue {
+    fn vec_from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+        use TagValue::*;
+        use IntegerType::*;
+
+        let ty = stream.read_u8()?;
+        let size = stream.read_i32::<LittleEndian>()? as usize;
+        match ty {
+            b'c' => Ok(IntArray((0..size)
+                .map(|_| stream.read_i8().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, I8)),
+            b'C' => Ok(IntArray((0..size)
+                .map(|_| stream.read_u8().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, U8)),
+            b's' => Ok(IntArray((0..size)
+                .map(|_| stream.read_i16::<LittleEndian>().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, I16)),
+            b'S' => Ok(IntArray((0..size)
+                .map(|_| stream.read_u16::<LittleEndian>().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, U16)),
+            b'i' => Ok(IntArray((0..size)
+                .map(|_| stream.read_i32::<LittleEndian>().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, I16)),
+            b'I' => Ok(IntArray((0..size)
+                .map(|_| stream.read_u32::<LittleEndian>().map(|el| el as i64))
+                .collect::<io::Result<_>>()?, U32)),
+            b'f' => {
+                let mut float_vec = vec![0.0_f32; size];
+                stream.read_f32_into::<LittleEndian>(&mut float_vec)?;
+                Ok(FloatArray(float_vec))
+            },
+            _ => Err(io::Error::new(ErrorKind::InvalidData, "Corrupted record: Failed to read a tag")),
+        }
+    }
+
+    pub fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+        use TagValue::*;
+        use IntegerType::*;
+
+        let ty = stream.read_u8()?;
+        match ty {
+            b'c' => Ok(Int(stream.read_i8()? as i64, I8)),
+            b'C' => Ok(Int(stream.read_u8()? as i64, U8)),
+            b's' => Ok(Int(stream.read_i16::<LittleEndian>()? as i64, I16)),
+            b'S' => Ok(Int(stream.read_u16::<LittleEndian>()? as i64, U16)),
+            b'i' => Ok(Int(stream.read_i32::<LittleEndian>()? as i64, I32)),
+            b'I' => Ok(Int(stream.read_u32::<LittleEndian>()? as i64, U32)),
+            b'f' => Ok(Float(stream.read_f32::<LittleEndian>()?)),
+            b'Z' | b'H' => {
+                let mut res = Vec::new();
+                loop {
+                    let symbol = stream.read_u8()?;
+                    if symbol == 0 {
+                        break;
+                    } else {
+                        res.push(symbol);
+                    }
+                }
+                if ty == b'Z' {
+                    Ok(String(res))
+                } else {
+                    Ok(Hex(res))
+                }
+            },
+            b'B' => TagValue::vec_from_stream(stream),
+            _ => Err(io::Error::new(ErrorKind::InvalidData, "Corrupted record: Failed to read a tag")),
+        }
+    }
+}
+
+struct Tag {
+    key: [u8; 2],
+    value: TagValue,
+}
+
+impl Tag {
+    fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+        let mut key = [0_u8; 2];
+        stream.read_exact(&mut key)?;
+        let value = TagValue::from_stream(stream)?;
+        Ok(Tag { key, value })
+    }
+}
+
 const READ_PAIRED: u16 = 0x1;
 const ALL_SEGMENTS_ALIGNED: u16 = 0x2;
 const READ_UNMAPPED: u16 = 0x4;
@@ -28,7 +130,7 @@ pub struct Record {
     cigar: Vec<u32>,
     seq: Vec<u8>,
     qual: Vec<u8>,
-    // tags
+    tags: Vec<Tag>,
 }
 
 pub enum Error {
@@ -64,12 +166,13 @@ impl Record {
             cigar: Vec::new(),
             seq: Vec::new(),
             qual: Vec::new(),
+            tags: Vec::new(),
         }
     }
 
     pub fn fill_from<R: Read>(&mut self, stream: &mut R) -> Result<(), Error> {
         let block_size = match stream.read_i32::<LittleEndian>() {
-            Ok(value) => value,
+            Ok(value) => value as usize,
             Err(e) => {
                 return Err(if e.kind() == ErrorKind::UnexpectedEof {
                     Error::NoMoreReads
@@ -103,6 +206,14 @@ impl Record {
         stream.read_exact(&mut self.seq)?;
         stream.read_exact(&mut self.qual)?;
 
-        unimplemented!();
+        let remaining_size = block_size - 32 - name_len - 1 - cigar_len - 2 * seq_len;
+        let mut tags_vec = vec![0; remaining_size];
+        stream.read_exact(&mut tags_vec)?;
+        let mut tags_reader = &tags_vec;
+        self.tags.clear();
+        while tags_reader.len() > 0 {
+            self.tags.push(Tag::from_stream(stream)?);
+        }
+        Ok(())
     }
 }
