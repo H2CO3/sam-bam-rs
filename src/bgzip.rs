@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{Read, Seek, Result, Error, SeekFrom};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
+use std::cmp::min;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
@@ -16,12 +17,14 @@ fn as_u16(buffer: &[u8], start: usize) -> u16 {
 }
 
 pub struct Block {
+    compressed_size: usize,
     uncompr_data: Vec<u8>,
 }
 
 impl Block {
     fn new() -> Block {
         Block {
+            compressed_size: 0,
             uncompr_data: Vec::with_capacity(MAX_BLOCK_SIZE),
         }
     }
@@ -32,7 +35,7 @@ impl Block {
     ///
     /// * `reading_buffer` - Buffer for reading the compressed block.
     ///     It should have length >= `MAX_BLOCK_SIZE`
-    fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<usize> {
+    fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<()> {
         debug_assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
         debug_assert!(self.uncompr_data.capacity() >= MAX_BLOCK_SIZE);
         self.uncompr_data.clear();
@@ -76,7 +79,9 @@ impl Block {
                 exp_uncompr_size, obs_uncompr_size)));
         }
         debug_assert!(obs_uncompr_size == self.uncompr_data.len());
-        Ok(block_size)
+        self.compressed_size = block_size;
+
+        Ok(())
     }
 
     /// Analyzes 12 heades bytes of a block.
@@ -107,15 +112,16 @@ impl Block {
         Err(Error::new(InvalidData, "bgzip::Block has an invalid header"))
     }
 
-    pub fn contents(&self, start: u16, end: Option<u16>) -> &[u8] {
-        match end {
-            Some(value) => &self.uncompr_data[start as usize..value as usize],
-            None => &self.uncompr_data[start as usize..],
-        }
+    pub fn contents(&self, start: usize, end: usize) -> &[u8] {
+        &self.uncompr_data[start..end]
     }
 
-    pub fn len(&self) -> usize {
+    pub fn uncompressed_size(&self) -> usize {
         self.uncompr_data.len()
+    }
+
+    pub fn compressed_size(&self) -> usize {
+        self.compressed_size
     }
 }
 
@@ -162,56 +168,57 @@ impl<R: Read + Seek> Reader<R> {
         self.cache.insert(offset, block);
         Ok(self.cache.get_mut(&offset).expect("Cache should contain the requested block"))
     }
-
-    // pub fn chunks_iter(&mut self, chunks: Vec<Chunk>) {
-    //     chunks.into_iter().flat_map(|chunk| )
-    // }
-
-    // fn chunk_iter(&mut self, chunk: Chunk) -> Result<impl Iterator<Item = u8>> {
-    //     let start_compr_offset = chunk.start().compr_offset();
-    //     let end_compr_offset = chunk.end().compr_offset();
-    //     (start_compr_offset..=end_compr_offset).flat_map(|compr_offset| {
-    //         let start = if compr_offset == start_compr_offset {
-    //             chunk.start().uncompr_offset()
-    //         } else {
-    //             0
-    //         };
-    //         let end = if compr_offset == end_compr_offset {
-    //             Some(chunk.end().uncompr_offset())
-    //         } else {
-    //             None
-    //         };
-            
-    //         // if end == start {
-    //         //     (&[]).iter()
-    //         // } else 
-
-    //         let block = self.get_block(compr_offset);
-    //         block.contents(start, end).iter()
-    //     })
-    // }
 }
 
 struct ChunksReader<'a, R: Read + Seek> {
     reader: &'a mut Reader<R>,
-    current_block: Option<&'a Block>,
-    in_block_pos: u16,
     chunks: Vec<Chunk>,
     chunk_ix: usize,
+    block_offset: u64,
+    in_block_offset: usize,
 }
 
 impl<'a, R: Read + Seek> ChunksReader<'a, R> {
     fn new(reader: &'a mut Reader<R>, chunks: Vec<Chunk>) -> Self {
-        let res = ChunksReader {
-            reader,
-            current_block: None,
-            in_block_pos: 0,
-            chunks,
-            chunk_ix: 0,
+        let (block_offset, in_block_offset) = if chunks.len() > 0 {
+            (chunks[0].start().compr_offset(), chunks[0].start().uncompr_offset() as usize)
+        } else {
+            (0, 0)
         };
-        // res.current_block = Some(res.reader.get_block(0).unwrap());
-        res
+        ChunksReader {
+            reader, chunks,
+            chunk_ix: 0,
+            block_offset, in_block_offset,
+        }
     }
 }
 
-// impl<'a, R: Read + Seek> Read for ChunksReader
+impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.chunk_ix >= self.chunks.len() {
+            return Ok(0);
+        }
+
+        let chunk = &self.chunks[self.chunk_ix];
+        let block = self.reader.get_block(self.block_offset)?;
+
+        let mut bytes = if chunk.end().compr_offset() == self.block_offset {
+            // Last block in a chunk
+            chunk.end().uncompr_offset() as usize - self.in_block_offset
+        } else {
+            block.uncompressed_size() - self.in_block_offset
+        };
+        bytes = min(bytes, buf.len());
+        buf.copy_from_slice(block.contents(self.in_block_offset, self.in_block_offset + bytes));
+        
+        self.in_block_offset += bytes;
+        if (chunk.end().compr_offset() == self.block_offset
+                && self.in_block_offset == chunk.end().uncompr_offset() as usize) {
+            // Last block in a chunk
+            self.chunk_ix += 1;
+        } else if block.uncompressed_size() == self.in_block_offset {
+            self.block_offset += block.compressed_size() as u64;
+        }
+        Ok(bytes)
+    }
+}
