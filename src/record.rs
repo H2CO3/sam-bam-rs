@@ -409,6 +409,10 @@ impl Record {
         Ok(())
     }
 
+    pub fn pos(&self) -> i32 {
+        self.pos
+    }
+
     pub fn sequence(&self) -> &Sequence {
         &self.seq
     }
@@ -419,6 +423,10 @@ impl Record {
         } else {
             Some(&self.qual)
         }
+    }
+
+    pub fn cigar(&self) -> &Cigar {
+        &self.cigar
     }
 
     pub fn write_sam<W: Write>(&self, f: &mut W, header: &Header) -> io::Result<()> {

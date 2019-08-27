@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, Result, Error, SeekFrom, BufReader};
+use std::io::{Read, Seek, Result, Error, SeekFrom};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::cmp::min;

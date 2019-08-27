@@ -90,11 +90,23 @@ pub struct RegionViewer<'a, R: Read + Seek> {
     chunks_reader: BufReader<bgzip::ChunksReader<'a, R>>,
     start: i32,
     end: i32,
+    predicate: Box<Fn(&record::Record) -> bool>,
 }
 
 impl<'a, R: Read + Seek> RegionViewer<'a, R> {
     pub fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
-        record.fill_from(&mut self.chunks_reader)
+        loop {
+            record.fill_from(&mut self.chunks_reader)?;
+            if (self.predicate)(&record) && record.pos() < self.end {
+                let record_end = record.pos()
+                    .checked_add(record.cigar().calculate_query_len() as i32)
+                    .ok_or_else(|| record::Error::IoError(Error::new(InvalidData,
+                        "Record alignment end is outside of the int32 range")))?;
+                if record_end > self.start {
+                    return Ok(());
+                }
+            }
+        }
     }
 
     pub fn records<'b>(&'b mut self) -> RecordsIter<'b, 'a, R> {
@@ -153,6 +165,19 @@ impl<R: Read + Seek> IndexedReader<R> {
         RegionViewer {
             chunks_reader: BufReader::new(bgzip::ChunksReader::new(&mut self.reader, chunks)),
             start, end,
+            predicate: Box::new(|_| true),
+        }
+    }
+
+    pub fn fetch_by<'a, F>(&'a mut self, ref_id: i32, start: i32, end: i32, predicate: F)
+        -> RegionViewer<'a, R>
+    where F: 'static + Fn(&record::Record) -> bool
+    {
+        let chunks = self.index.fetch_chunks(ref_id, start, end);
+        RegionViewer {
+            chunks_reader: BufReader::new(bgzip::ChunksReader::new(&mut self.reader, chunks)),
+            start, end,
+            predicate: Box::new(predicate),
         }
     }
 

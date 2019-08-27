@@ -128,7 +128,7 @@ struct Reference {
     bins: HashMap<u32, Bin>,
 }
 
-const SUMMARY_BIN: u32 = 37450;
+// const SUMMARY_BIN: u32 = 37450;
 
 impl Reference {
     fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {

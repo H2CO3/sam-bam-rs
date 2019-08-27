@@ -1,4 +1,4 @@
-use std::io::{self, Read, ErrorKind};
+use std::io;
 use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
