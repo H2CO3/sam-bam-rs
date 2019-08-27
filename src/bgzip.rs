@@ -2,13 +2,10 @@ use std::fs::File;
 use std::io::{Read, Seek, Result, Error, SeekFrom};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
-use std::cmp::min;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
 use lru_cache::LruCache;
-
-use super::index::Chunk;
 
 const MAX_BLOCK_SIZE: usize = 65536;
 
@@ -161,58 +158,5 @@ impl<R: Read + Seek> Reader<R> {
         block.fill(&mut self.stream, &mut self.reading_buffer)?;
         self.cache.insert(offset, block);
         Ok(self.cache.get_mut(&offset).expect("Cache should contain the requested block"))
-    }
-}
-
-struct ChunksReader<'a, R: Read + Seek> {
-    reader: &'a mut Reader<R>,
-    chunks: Vec<Chunk>,
-    chunk_ix: usize,
-    block_offset: u64,
-    in_block_offset: usize,
-}
-
-impl<'a, R: Read + Seek> ChunksReader<'a, R> {
-    fn new(reader: &'a mut Reader<R>, chunks: Vec<Chunk>) -> Self {
-        let (block_offset, in_block_offset) = if chunks.len() > 0 {
-            (chunks[0].start().compr_offset(), chunks[0].start().uncompr_offset() as usize)
-        } else {
-            (0, 0)
-        };
-        ChunksReader {
-            reader, chunks,
-            chunk_ix: 0,
-            block_offset, in_block_offset,
-        }
-    }
-}
-
-impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        if self.chunk_ix >= self.chunks.len() {
-            return Ok(0);
-        }
-
-        let chunk = &self.chunks[self.chunk_ix];
-        let block = self.reader.get_block(self.block_offset)?;
-
-        let mut bytes = if chunk.end().compr_offset() == self.block_offset {
-            // Last block in a chunk
-            chunk.end().uncompr_offset() as usize - self.in_block_offset
-        } else {
-            block.uncompressed_size() - self.in_block_offset
-        };
-        bytes = min(bytes, buf.len());
-        buf.copy_from_slice(block.contents(self.in_block_offset, self.in_block_offset + bytes));
-        
-        self.in_block_offset += bytes;
-        if chunk.end().compr_offset() == self.block_offset
-                && self.in_block_offset == chunk.end().uncompr_offset() as usize {
-            // Last block in a chunk
-            self.chunk_ix += 1;
-        } else if block.uncompressed_size() == self.in_block_offset {
-            self.block_offset += block.compressed_size() as u64;
-        }
-        Ok(bytes)
     }
 }

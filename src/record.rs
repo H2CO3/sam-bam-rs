@@ -1,4 +1,5 @@
 use std::io::{self, Read, ErrorKind};
+use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -104,18 +105,18 @@ impl Tag {
     }
 }
 
-const READ_PAIRED: u16 = 0x1;
-const ALL_SEGMENTS_ALIGNED: u16 = 0x2;
-const READ_UNMAPPED: u16 = 0x4;
-const MATE_UNMAPPED: u16 = 0x8;
-const READ_REVERSE_STRAND: u16 = 0x10;
-const MATE_REVERSE_STRAND: u16 = 0x20;
-const FIRST_IN_PAIR: u16 = 0x40;
-const SECOND_IN_PAIR: u16 = 0x80;
-const NOT_PRIMARY: u16 = 0x100;
-const READ_FAILS_QC: u16 = 0x200;
-const PCR_OR_OPTICAL_DUPLICATE: u16 = 0x400;
-const SUPPLEMENTARY: u16 = 0x800;
+pub const READ_PAIRED: u16 = 0x1;
+pub const ALL_SEGMENTS_ALIGNED: u16 = 0x2;
+pub const READ_UNMAPPED: u16 = 0x4;
+pub const MATE_UNMAPPED: u16 = 0x8;
+pub const READ_REVERSE_STRAND: u16 = 0x10;
+pub const MATE_REVERSE_STRAND: u16 = 0x20;
+pub const SECOND_IN_PAIR: u16 = 0x80;
+pub const FIRST_IN_PAIR: u16 = 0x40;
+pub const NOT_PRIMARY: u16 = 0x100;
+pub const READ_FAILS_QC: u16 = 0x200;
+pub const PCR_OR_OPTICAL_DUPLICATE: u16 = 0x400;
+pub const SUPPLEMENTARY: u16 = 0x800;
 
 pub struct Record {
     ref_id: i32,
@@ -209,11 +210,24 @@ impl Record {
         let remaining_size = block_size - 32 - name_len - 1 - cigar_len - 2 * seq_len;
         let mut tags_vec = vec![0; remaining_size];
         stream.read_exact(&mut tags_vec)?;
-        let mut tags_reader = &tags_vec;
+        let tags_reader = &tags_vec;
         self.tags.clear();
         while tags_reader.len() > 0 {
             self.tags.push(Tag::from_stream(stream)?);
         }
         Ok(())
+    }
+}
+
+impl Display for Record {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        let name = unsafe {
+            std::str::from_utf8_unchecked(&self.name)
+        };
+
+        // TODO: Reference name
+        write!(f, "{name}\t{flag}\t{ref}\t{pos}\t{mapq}", name=name, flag=self.flag,
+            ref=self.ref_id, pos=self.pos, mapq=self.mapq)?;
+        writeln!(f)
     }
 }

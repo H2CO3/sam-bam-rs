@@ -6,3 +6,4 @@ extern crate lru_cache;
 pub mod index;
 pub mod bgzip;
 pub mod record;
+pub mod bam_reader;
