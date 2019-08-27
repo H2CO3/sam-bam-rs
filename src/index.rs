@@ -1,4 +1,4 @@
-use std::io::{Result, Error};
+use std::io::{Result, Error, Read};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::fs::File;
@@ -19,7 +19,7 @@ impl VirtualOffset {
         VirtualOffset(raw)
     }
 
-    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
@@ -60,7 +60,7 @@ impl Chunk {
         Chunk { start, end }
     }
 
-    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
         let start = VirtualOffset::from_stream(stream)?;
         let end = VirtualOffset::from_stream(stream)?;
         Ok(Chunk { start, end })
@@ -107,7 +107,7 @@ struct Bin {
 }
 
 impl Bin {
-    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
         let bin_id = stream.read_u32::<LittleEndian>()?;
         let n_chunks = stream.read_i32::<LittleEndian>()?;
         let chunks = (0..n_chunks).map(|_| Chunk::from_stream(stream)).collect::<Result<_>>()?;
@@ -131,7 +131,7 @@ struct Reference {
 // const SUMMARY_BIN: u32 = 37450;
 
 impl Reference {
-    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
         let n_bins = stream.read_i32::<LittleEndian>()?;
         let bins = (0..n_bins).map(|_| {
             let bin = Bin::from_stream(stream)?;
@@ -159,7 +159,7 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn from_stream<R: ReadBytesExt>(mut stream: R) -> Result<Index> {
+    pub fn from_stream<R: Read>(mut stream: R) -> Result<Index> {
         let mut magic = [0_u8; 4];
         stream.read_exact(&mut magic)?;
         if magic != [b'B', b'A', b'I', 1] {

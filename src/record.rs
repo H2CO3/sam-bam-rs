@@ -284,8 +284,9 @@ pub const SUPPLEMENTARY: u16 = 0x800;
 pub struct Record {
     ref_id: i32,
     next_ref_id: i32,
-    pos: i32,
-    next_pos: i32,
+    start: i32,
+    end: Option<i32>,
+    next_start: i32,
     mapq: u8,
     flag: u16,
     template_len: i32,
@@ -298,13 +299,24 @@ pub struct Record {
 }
 
 pub enum Error {
-    IoError(io::Error),
-    NoMoreReads,
+    NoMoreRecords,
+    Corrupted(&'static str),
+    Truncated(io::Error),
 }
 
 impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Error::IoError(error)
+    fn from(e: io::Error) -> Error {
+        Error::Truncated(e)
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        match self {
+            Error::NoMoreRecords => write!(f, "No more records"),
+            Error::Corrupted(e) => write!(f, "Corrupted read: {}", e),
+            Error::Truncated(e) => write!(f, "Truncated read: {}", e),
+        }
     }
 }
 
@@ -320,8 +332,9 @@ impl Record {
         Record {
             ref_id: -1,
             next_ref_id: -1,
-            pos: -1,
-            next_pos: -1,
+            start: -1,
+            end: None,
+            next_start: -1,
             mapq: 0,
             flag: 0,
             template_len: 0,
@@ -338,14 +351,13 @@ impl Record {
         let block_size = match stream.read_i32::<LittleEndian>() {
             Ok(value) => {
                 if value < 0 {
-                    return Err(Error::IoError(
-                        io::Error::new(InvalidData, "Corrupted read: negative block size")));
+                    return Err(Error::Corrupted("Negative block size"));
                 }
                 value as usize
             },
             Err(e) => {
                 return Err(if e.kind() == ErrorKind::UnexpectedEof {
-                    Error::NoMoreReads
+                    Error::NoMoreRecords
                 } else {
                     Error::from(e)
                 })
@@ -353,16 +365,16 @@ impl Record {
         };
         self.ref_id = stream.read_i32::<LittleEndian>()?;
         if self.ref_id < -1 {
-            return Err(Error::IoError(io::Error::new(InvalidData, "Corrupted read: refID < -1")));
+            return Err(Error::Corrupted("Reference id < -1"));
         }
-        self.pos = stream.read_i32::<LittleEndian>()?;
-        if self.pos < -1 {
-            return Err(Error::IoError(io::Error::new(InvalidData, "Corrupted read: POS < -1")));
+        self.start = stream.read_i32::<LittleEndian>()?;
+        if self.start < -1 {
+            return Err(Error::Corrupted("Start < -1"));
         }
+        self.end = None;
         let name_len = stream.read_u8()?;
         if name_len == 0 {
-            return Err(Error::IoError(io::Error::new(InvalidData,
-                "Corrupted read: name length == 0")));
+            return Err(Error::Corrupted("Name length == 0"));
         }
         self.mapq = stream.read_u8()?;
         let _bin = stream.read_u16::<LittleEndian>()?;
@@ -370,19 +382,16 @@ impl Record {
         self.flag = stream.read_u16::<LittleEndian>()?;
         let qual_len = stream.read_i32::<LittleEndian>()?;
         if qual_len < 0 {
-            return Err(Error::IoError(io::Error::new(InvalidData,
-                "Corrupted read: negative sequence length")));
+            return Err(Error::Corrupted("Negative sequence length"));
         }
         let qual_len = qual_len as usize;
         self.next_ref_id = stream.read_i32::<LittleEndian>()?;
         if self.next_ref_id < -1 {
-            return Err(Error::IoError(io::Error::new(InvalidData,
-                "Corrupted read: next_refID < -1")));
+            return Err(Error::Corrupted("Next reference id < -1"));
         }
-        self.next_pos = stream.read_i32::<LittleEndian>()?;
-        if self.next_pos < -1 {
-            return Err(Error::IoError(io::Error::new(InvalidData,
-                "Corrupted read: PNEXT < -1")));
+        self.next_start = stream.read_i32::<LittleEndian>()?;
+        if self.next_start < -1 {
+            return Err(Error::Corrupted("Next start < -1"));
         }
         self.template_len = stream.read_i32::<LittleEndian>()?;
 
@@ -409,8 +418,20 @@ impl Record {
         Ok(())
     }
 
-    pub fn pos(&self) -> i32 {
-        self.pos
+    pub fn start(&self) -> i32 {
+        self.start
+    }
+
+    pub fn calculate_end(&mut self) -> i32 {
+        if self.cigar.len() == 0 {
+            -1
+        } else if let Some(end) = self.end {
+            end
+        } else {
+            let end = self.start + self.cigar.calculate_aln_len() as i32;
+            self.end = Some(end);
+            end
+        }
     }
 
     pub fn sequence(&self) -> &Sequence {
@@ -441,7 +462,7 @@ impl Record {
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }
-        write!(f, "{}\t{}\t", self.pos + 1, self.mapq)?;
+        write!(f, "{}\t{}\t", self.start + 1, self.mapq)?;
         write!(f, "{}\t", self.cigar)?;
 
         if self.next_ref_id < 0 {
@@ -453,7 +474,7 @@ impl Record {
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }
-        write!(f, "{}\t{}\t", self.next_pos + 1, self.template_len)?;
+        write!(f, "{}\t{}\t", self.next_start + 1, self.template_len)?;
         write!(f, "{}\t{}", self.seq, self.qual)?;
         for tag in self.tags.iter() {
             write!(f, "\t{}", tag)?;

@@ -117,8 +117,8 @@ impl Cigar {
         &self.0
     }
 
-    pub fn calculate_query_len(&self) -> u32 {
-        self.iter().map(|(len, op)| if op.consumes_query() { len } else { 0 }).sum::<u32>()
+    pub fn calculate_aln_len(&self) -> u32 {
+        self.iter().map(|(len, op)| if op.consumes_ref() { len } else { 0 }).sum::<u32>()
     }
 }
 

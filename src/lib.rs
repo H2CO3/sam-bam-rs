@@ -8,3 +8,5 @@ pub mod bgzip;
 pub mod cigar;
 pub mod record;
 pub mod bam_reader;
+
+pub use bam_reader::{Header, IndexedReader};

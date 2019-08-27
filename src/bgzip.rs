@@ -135,14 +135,14 @@ impl SeekReader<File> {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let stream = File::open(path)
             .map_err(|e| Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
-        SeekReader::new(stream)
+        SeekReader::from_stream(stream)
     }
 }
 
 const LRU_CAPACITY: usize = 1000;
 
 impl<R: Read + Seek> SeekReader<R> {
-    pub fn new(stream: R) -> Result<Self> {
+    pub fn from_stream(stream: R) -> Result<Self> {
         Ok(SeekReader {
             stream,
             cache: LruCache::new(LRU_CAPACITY),
