@@ -274,9 +274,9 @@ pub const READ_UNMAPPED: u16 = 0x4;
 pub const MATE_UNMAPPED: u16 = 0x8;
 pub const READ_REVERSE_STRAND: u16 = 0x10;
 pub const MATE_REVERSE_STRAND: u16 = 0x20;
-pub const SECOND_IN_PAIR: u16 = 0x80;
 pub const FIRST_IN_PAIR: u16 = 0x40;
-pub const NOT_PRIMARY: u16 = 0x100;
+pub const LAST_IN_PAIR: u16 = 0x80;
+pub const SECONDARY: u16 = 0x100;
 pub const READ_FAILS_QC: u16 = 0x200;
 pub const PCR_OR_OPTICAL_DUPLICATE: u16 = 0x400;
 pub const SUPPLEMENTARY: u16 = 0x800;
@@ -459,5 +459,55 @@ impl Record {
             write!(f, "\t{}", tag)?;
         }
         writeln!(f)
+    }
+
+    pub fn is_paired(&self) -> bool {
+        self.flag & READ_PAIRED != 0
+    }
+
+    pub fn all_segments_aligned(&self) -> bool {
+        self.flag & ALL_SEGMENTS_ALIGNED != 0
+    }
+
+    pub fn is_mapped(&self) -> bool {
+        // EQUAL 0
+        self.flag & READ_UNMAPPED == 0
+    }
+
+    pub fn mate_is_mapped(&self) -> bool {
+        // EQUAL 0
+        self.flag & MATE_UNMAPPED == 0
+    }
+
+    pub fn is_reverse_strand(&self) -> bool {
+        self.flag & READ_REVERSE_STRAND != 0
+    }
+
+    pub fn mate_is_reverse_strand(&self) -> bool {
+        self.flag & MATE_REVERSE_STRAND != 0
+    }
+
+    pub fn first_in_pair(&self) -> bool {
+        self.flag & FIRST_IN_PAIR != 0
+    }
+
+    pub fn last_in_pair(&self) -> bool {
+        self.flag & LAST_IN_PAIR != 0
+    }
+
+    pub fn is_secondary(&self) -> bool {
+        self.flag & SECONDARY != 0
+    }
+
+    pub fn fails_quality_controls(&self) -> bool {
+        self.flag & READ_FAILS_QC != 0
+    }
+
+    pub fn is_duplicate(&self) -> bool {
+        self.flag & PCR_OR_OPTICAL_DUPLICATE != 0
+    }
+
+    pub fn is_supplementary(&self) -> bool {
+        self.flag & SUPPLEMENTARY != 0
     }
 }
