@@ -1,4 +1,5 @@
 use std::io::{self, Read, ErrorKind};
+use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -16,7 +17,7 @@ pub enum Operation {
 }
 
 impl Operation {
-    pub fn from_char(symbol: u8) -> Operation {
+    pub fn from_symbol(symbol: u8) -> Operation {
         use Operation::*;
         match symbol {
             b'M' => AlnMatch,
@@ -32,8 +33,36 @@ impl Operation {
         }
     }
 
-    pub fn to_char(self) -> u8 {
+    pub fn to_byte(self) -> u8 {
         b"MIDNSHP=X"[self as usize]
+    }
+
+    pub fn consumes_query(&self) -> bool {
+        match self {
+            Operation::AlnMatch
+            | Operation::Insertion
+            | Operation::Soft
+            | Operation::SeqMatch
+            | Operation::SeqMismatch => true,
+            _ => false
+        }
+    }
+
+    pub fn consumes_ref(&self) -> bool {
+        match self {
+            Operation::AlnMatch
+            | Operation::Deletion
+            | Operation::Skip
+            | Operation::SeqMatch
+            | Operation::SeqMismatch => true,
+            _ => false
+        }
+    }
+}
+
+impl Display for Operation {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{}", self.to_byte() as char)
     }
 }
 
@@ -78,5 +107,26 @@ impl Cigar {
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, Operation)> + '_ {
         (0..self.0.len()).map(move |i| self.at(i))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn raw(&self) -> &[u32] {
+        &self.0
+    }
+
+    pub fn calculate_query_len(&self) -> u32 {
+        self.iter().map(|(len, op)| if op.consumes_query() { len } else { 0 }).sum::<u32>()
+    }
+}
+
+impl Display for Cigar {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        for (len, op) in self.iter() {
+            write!(f, "{}{}", len, op)?;
+        }
+        Ok(())
     }
 }

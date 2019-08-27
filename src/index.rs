@@ -19,7 +19,7 @@ impl VirtualOffset {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
-    fn from(compr_offset: u64, uncompr_offset: u16) -> Self {
+    pub fn from(compr_offset: u64, uncompr_offset: u16) -> Self {
         VirtualOffset(compr_offset << 16 | uncompr_offset as u64)
     }
 

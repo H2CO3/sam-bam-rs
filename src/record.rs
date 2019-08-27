@@ -15,6 +15,20 @@ pub enum IntegerType {
     U32,
 }
 
+impl IntegerType {
+    pub fn letter(&self) -> u8 {
+        use IntegerType::*;
+        match self {
+            I8 => b'c',
+            U8 => b'C',
+            I16 => b's',
+            U16 => b'S',
+            I32 => b'i',
+            U32 => b'I',
+        }
+    }
+}
+
 pub enum TagValue {
     Char(u8),
     Int(i64, IntegerType),
@@ -97,6 +111,34 @@ impl TagValue {
     }
 }
 
+impl Display for TagValue {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        use TagValue::*;
+        match self {
+            Char(value) => write!(f, "A:{}", *value as char),
+            Int(value, _) => write!(f, "i:{}", value),
+            Float(value) => write!(f, "f:{}", value),
+            String(value) => write!(f, "Z:{}", std::string::String::from_utf8_lossy(value)),
+            Hex(value) => write!(f, "H:{}", std::str::from_utf8(value)
+                .expect("Corrupted read: Hex tag is not in UTF-8")),
+            IntArray(array, ty) => {
+                write!(f, "B:{}", ty.letter() as char)?;
+                for value in array.iter() {
+                    write!(f, ",{}", value)?;
+                }
+                Ok(())
+            },
+            FloatArray(array) => {
+                write!(f, "B:f")?;
+                for value in array.iter() {
+                    write!(f, ",{}", value)?;
+                }
+                Ok(())
+            },
+        }
+    }
+}
+
 struct Tag {
     key: [u8; 2],
     value: TagValue,
@@ -108,6 +150,13 @@ impl Tag {
         stream.read_exact(&mut key)?;
         let value = TagValue::from_stream(stream)?;
         Ok(Tag { key, value })
+    }
+}
+
+impl Display for Tag {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        write!(f, "{}{}:", self.key[0] as char, self.key[1] as char)?;
+        self.value.fmt(f)
     }
 }
 
