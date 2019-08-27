@@ -2,10 +2,13 @@ use std::fs::File;
 use std::io::{Read, Seek, Result, Error, SeekFrom};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
+use std::cmp::min;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
 use lru_cache::LruCache;
+
+use super::index::Chunk;
 
 const MAX_BLOCK_SIZE: usize = 65536;
 
@@ -110,6 +113,7 @@ impl Block {
     }
 
     pub fn contents(&self, start: usize, end: usize) -> &[u8] {
+        println!("    Returning contents [{}..{}]", start, end);
         &self.uncompr_data[start..end]
     }
 
@@ -148,15 +152,101 @@ impl<R: Read + Seek> Reader<R> {
     }
 
     pub fn get_block<'a>(&'a mut self, offset: u64) -> Result<&'a Block> {
+        println!("Getting block: {}", offset);
         if self.cache.contains_key(&offset) {
+            println!("    Cache hit");
             return Ok(self.cache.get_mut(&offset)
                 .expect("Cache should contain the requested block"));
         }
 
+        println!("    Cache miss");
         self.stream.seek(SeekFrom::Start(offset))?;
         let mut block = Block::new();
         block.fill(&mut self.stream, &mut self.reading_buffer)?;
         self.cache.insert(offset, block);
         Ok(self.cache.get_mut(&offset).expect("Cache should contain the requested block"))
+    }
+}
+
+pub(crate) struct ChunksReader<'a, R: Read + Seek> {
+    reader: &'a mut Reader<R>,
+    chunks: Vec<Chunk>,
+    chunk_ix: usize,
+    block_offset: u64,
+    in_block_offset: usize,
+    compr_block_size: usize,
+    uncompr_block_size: usize,
+}
+
+const OFFSET_UNDEFINED: u64 = std::u64::MAX;
+const BLOCK_SIZE_UNKNOWN: usize = std::usize::MAX;
+
+impl<'a, R: Read + Seek> ChunksReader<'a, R> {
+    pub fn new(reader: &'a mut Reader<R>, chunks: Vec<Chunk>) -> Self {
+        ChunksReader {
+            reader, chunks,
+            chunk_ix: 0,
+            block_offset: OFFSET_UNDEFINED,
+            in_block_offset: 0,
+            compr_block_size: BLOCK_SIZE_UNKNOWN,
+            uncompr_block_size: BLOCK_SIZE_UNKNOWN,
+        }
+    }
+}
+
+impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        println!("Read query: length {}", buf.len());
+
+        loop {
+            println!("    Current status: chunk ix: {},  block_offset: {},  in_block_offset: {}",
+                self.chunk_ix, self.block_offset, self.in_block_offset);
+            if self.chunk_ix >= self.chunks.len() {
+                return Ok(0);
+            }
+            let chunk = &self.chunks[self.chunk_ix];
+            if self.block_offset == OFFSET_UNDEFINED {
+                self.block_offset = chunk.start().compr_offset();
+                self.in_block_offset = chunk.start().uncompr_offset() as usize;
+            }
+
+            // Last block in a chunk
+            if chunk.end().compr_offset() == self.block_offset
+                    && chunk.end().uncompr_offset() as usize == self.in_block_offset {
+                self.chunk_ix += 1;
+                self.block_offset = OFFSET_UNDEFINED;
+                self.in_block_offset = 0;
+                self.compr_block_size = BLOCK_SIZE_UNKNOWN;
+                self.uncompr_block_size = BLOCK_SIZE_UNKNOWN;
+                continue;
+            }
+            if self.in_block_offset >= self.uncompr_block_size {
+                self.block_offset += self.compr_block_size as u64;
+                self.in_block_offset = 0;
+                self.compr_block_size = BLOCK_SIZE_UNKNOWN;
+                self.uncompr_block_size = BLOCK_SIZE_UNKNOWN;
+                continue;
+            }
+            break;
+        }
+        let chunk = &self.chunks[self.chunk_ix];
+        let block = self.reader.get_block(self.block_offset)?;
+        self.compr_block_size = block.compressed_size();
+        self.uncompr_block_size = block.uncompressed_size();
+
+        let mut bytes = if chunk.end().compr_offset() == self.block_offset {
+            // Last block in a chunk
+            println!("  Last block, end = {}", chunk.end().uncompr_offset());
+            chunk.end().uncompr_offset() as usize - self.in_block_offset
+        } else {
+            println!("  Not last block, end = {}", self.uncompr_block_size);
+            self.uncompr_block_size - self.in_block_offset
+        };
+        bytes = min(bytes, buf.len());
+        println!("  Loading {} bytes", bytes);
+        buf[..bytes].copy_from_slice(
+            block.contents(self.in_block_offset, self.in_block_offset + bytes));
+        self.in_block_offset += bytes;
+        Ok(bytes)
     }
 }

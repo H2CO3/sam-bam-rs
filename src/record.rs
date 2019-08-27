@@ -1,4 +1,5 @@
 use std::io::{self, Read, ErrorKind};
+use std::io::ErrorKind::InvalidData;
 use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -13,6 +14,7 @@ pub enum IntegerType {
 }
 
 pub enum TagValue {
+    Char(u8),
     Int(i64, IntegerType),
     Float(f32),
     String(Vec<u8>),
@@ -62,6 +64,7 @@ impl TagValue {
 
         let ty = stream.read_u8()?;
         match ty {
+            b'A' => Ok(Char(stream.read_u8()?)),
             b'c' => Ok(Int(stream.read_i8()? as i64, I8)),
             b'C' => Ok(Int(stream.read_u8()? as i64, U8)),
             b's' => Ok(Int(stream.read_i16::<LittleEndian>()? as i64, I16)),
@@ -86,7 +89,8 @@ impl TagValue {
                 }
             },
             b'B' => TagValue::vec_from_stream(stream),
-            _ => Err(io::Error::new(ErrorKind::InvalidData, "Corrupted record: Failed to read a tag")),
+            _ => Err(io::Error::new(ErrorKind::InvalidData,
+                format!("Corrupted record: Failed to read a tag (tag type = {})", ty as char))),
         }
     }
 }
@@ -173,7 +177,13 @@ impl Record {
 
     pub fn fill_from<R: Read>(&mut self, stream: &mut R) -> Result<(), Error> {
         let block_size = match stream.read_i32::<LittleEndian>() {
-            Ok(value) => value as usize,
+            Ok(value) => {
+                if value < 0 {
+                    return Err(Error::IoError(
+                        io::Error::new(InvalidData, "Corrupted read: negative block size")));
+                }
+                value as usize
+            },
             Err(e) => {
                 return Err(if e.kind() == ErrorKind::UnexpectedEof {
                     Error::NoMoreReads
@@ -183,22 +193,46 @@ impl Record {
             },
         };
         self.ref_id = stream.read_i32::<LittleEndian>()?;
+        if self.ref_id < -1 {
+            return Err(Error::IoError(io::Error::new(InvalidData, "Corrupted read: refID < -1")));
+        }
         self.pos = stream.read_i32::<LittleEndian>()?;
-        let name_len = stream.read_u8()? as usize - 1;
+        if self.pos < -1 {
+            return Err(Error::IoError(io::Error::new(InvalidData, "Corrupted read: POS < -1")));
+        }
+        let name_len = stream.read_u8()?;
+        if name_len == 0 {
+            return Err(Error::IoError(io::Error::new(InvalidData,
+                "Corrupted read: name length == 0")));
+        }
         self.mapq = stream.read_u8()?;
         let _bin = stream.read_u16::<LittleEndian>()?;
-        let cigar_len = stream.read_u16::<LittleEndian>()? as usize;
+        let cigar_len = stream.read_u16::<LittleEndian>()?;
         self.flag = stream.read_u16::<LittleEndian>()?;
-        let seq_len = stream.read_i32::<LittleEndian>()? as usize;
+        let qual_len = stream.read_i32::<LittleEndian>()?;
+        if qual_len < 0 {
+            return Err(Error::IoError(io::Error::new(InvalidData,
+                "Corrupted read: negative sequence length")));
+        }
+        let qual_len = qual_len as usize;
         self.next_ref_id = stream.read_i32::<LittleEndian>()?;
+        if self.next_ref_id < -1 {
+            return Err(Error::IoError(io::Error::new(InvalidData,
+                "Corrupted read: next_refID < -1")));
+        }
         self.next_pos = stream.read_i32::<LittleEndian>()?;
+        if self.next_pos < -1 {
+            return Err(Error::IoError(io::Error::new(InvalidData,
+                "Corrupted read: PNEXT < -1")));
+        }
         self.template_len = stream.read_i32::<LittleEndian>()?;
 
+        let seq_len = (qual_len + 1) / 2;
         unsafe {
-            resize(&mut self.name, name_len);
-            resize(&mut self.cigar, cigar_len);
+            resize(&mut self.name, name_len as usize - 1);
+            resize(&mut self.cigar, cigar_len as usize);
             resize(&mut self.seq, seq_len);
-            resize(&mut self.qual, seq_len);
+            resize(&mut self.qual, qual_len);
         }
 
         stream.read_exact(&mut self.name)?;
@@ -207,13 +241,14 @@ impl Record {
         stream.read_exact(&mut self.seq)?;
         stream.read_exact(&mut self.qual)?;
 
-        let remaining_size = block_size - 32 - name_len - 1 - cigar_len - 2 * seq_len;
+        let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
+            - seq_len - qual_len;
         let mut tags_vec = vec![0; remaining_size];
         stream.read_exact(&mut tags_vec)?;
-        let tags_reader = &tags_vec;
         self.tags.clear();
+        let mut tags_reader = &tags_vec[..];
         while tags_reader.len() > 0 {
-            self.tags.push(Tag::from_stream(stream)?);
+            self.tags.push(Tag::from_stream(&mut tags_reader)?);
         }
         Ok(())
     }

@@ -2,7 +2,7 @@ use std::io::{Result, Error};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::fs::File;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::result;
 use std::collections::HashMap;
 use std::cmp::{min, max};
@@ -76,6 +76,12 @@ impl Chunk {
 
     pub fn end(&self) -> VirtualOffset {
         self.end
+    }
+}
+
+impl Debug for Chunk {
+    fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
+        write!(f, "{{{}__{}}}", self.start, self.end)
     }
 }
 
@@ -166,8 +172,9 @@ impl Index {
     pub fn fetch_chunks(&self, ref_id: i32, start: i32, end: i32) -> Vec<Chunk> {
         let mut chunks = Vec::new();
         for bin_id in region_to_bins(start, end).into_iter() {
-            if let Some(bin_chunks) = self.references[ref_id as usize].bins.get(&bin_id) {
-                chunks.extend(bin_chunks.chunks.iter());
+            if let Some(bin) = self.references[ref_id as usize].bins.get(&bin_id) {
+                println!("Adding bin {}:   {:?}", bin_id, bin.chunks);
+                chunks.extend(bin.chunks.iter());
             }
         }
         let mut res = Vec::new();
