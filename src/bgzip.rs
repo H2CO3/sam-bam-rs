@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, Result, Error, SeekFrom};
+use std::io::{Read, Seek, Result, Error, SeekFrom, BufReader};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::cmp::min;
@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use libflate::deflate;
 use lru_cache::LruCache;
 
-use super::index::Chunk;
+use super::index::{Chunk, VirtualOffset};
 
 const MAX_BLOCK_SIZE: usize = 65536;
 
@@ -126,25 +126,25 @@ impl Block {
     }
 }
 
-pub struct Reader<R: Read + Seek> {
+pub struct SeekReader<R: Read + Seek> {
     stream: R,
     cache: LruCache<u64, Block>,
     reading_buffer: Vec<u8>,
 }
 
-impl Reader<File> {
+impl SeekReader<File> {
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let stream = File::open(path)
             .map_err(|e| Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
-        Reader::new(stream)
+        SeekReader::new(stream)
     }
 }
 
 const LRU_CAPACITY: usize = 1000;
 
-impl<R: Read + Seek> Reader<R> {
+impl<R: Read + Seek> SeekReader<R> {
     pub fn new(stream: R) -> Result<Self> {
-        Ok(Reader {
+        Ok(SeekReader {
             stream,
             cache: LruCache::new(LRU_CAPACITY),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
@@ -169,7 +169,7 @@ impl<R: Read + Seek> Reader<R> {
 }
 
 pub(crate) struct ChunksReader<'a, R: Read + Seek> {
-    reader: &'a mut Reader<R>,
+    reader: &'a mut SeekReader<R>,
     chunks: Vec<Chunk>,
     chunk_ix: usize,
     block_offset: u64,
@@ -182,9 +182,22 @@ const OFFSET_UNDEFINED: u64 = std::u64::MAX;
 const BLOCK_SIZE_UNKNOWN: usize = std::usize::MAX;
 
 impl<'a, R: Read + Seek> ChunksReader<'a, R> {
-    pub fn new(reader: &'a mut Reader<R>, chunks: Vec<Chunk>) -> Self {
+    pub fn new(reader: &'a mut SeekReader<R>, chunks: Vec<Chunk>) -> Self {
         ChunksReader {
             reader, chunks,
+            chunk_ix: 0,
+            block_offset: OFFSET_UNDEFINED,
+            in_block_offset: 0,
+            compr_block_size: BLOCK_SIZE_UNKNOWN,
+            uncompr_block_size: BLOCK_SIZE_UNKNOWN,
+        }
+    }
+
+    pub fn without_boundaries(reader: &'a mut SeekReader<R>) -> Self {
+        ChunksReader {
+            reader,
+            chunks: vec![Chunk::new(VirtualOffset::from_raw(0),
+                VirtualOffset::from_raw(std::u64::MAX))],
             chunk_ix: 0,
             block_offset: OFFSET_UNDEFINED,
             in_block_offset: 0,

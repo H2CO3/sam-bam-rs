@@ -15,7 +15,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 pub struct VirtualOffset(u64);
 
 impl VirtualOffset {
-    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    pub fn from_raw(raw: u64) -> VirtualOffset {
+        VirtualOffset(raw)
+    }
+
+    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
@@ -52,9 +56,13 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
-        let start = VirtualOffset::new(stream)?;
-        let end = VirtualOffset::new(stream)?;
+    pub fn new(start: VirtualOffset, end: VirtualOffset) -> Self {
+        Chunk { start, end }
+    }
+
+    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+        let start = VirtualOffset::from_stream(stream)?;
+        let end = VirtualOffset::from_stream(stream)?;
         Ok(Chunk { start, end })
     }
 
@@ -99,10 +107,10 @@ struct Bin {
 }
 
 impl Bin {
-    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         let bin_id = stream.read_u32::<LittleEndian>()?;
         let n_chunks = stream.read_i32::<LittleEndian>()?;
-        let chunks = (0..n_chunks).map(|_| Chunk::new(stream)).collect::<Result<_>>()?;
+        let chunks = (0..n_chunks).map(|_| Chunk::from_stream(stream)).collect::<Result<_>>()?;
         Ok(Bin { bin_id, chunks })
     }
 }
@@ -123,10 +131,10 @@ struct Reference {
 const SUMMARY_BIN: u32 = 37450;
 
 impl Reference {
-    fn new<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: ReadBytesExt>(stream: &mut R) -> Result<Self> {
         let n_bins = stream.read_i32::<LittleEndian>()?;
         let bins = (0..n_bins).map(|_| {
-            let bin = Bin::new(stream)?;
+            let bin = Bin::from_stream(stream)?;
             Ok((bin.bin_id, bin))
         }).collect::<Result<_>>()?;
         let n_intervals = stream.read_i32::<LittleEndian>()?;
@@ -151,7 +159,7 @@ pub struct Index {
 }
 
 impl Index {
-    pub fn new<R: ReadBytesExt>(mut stream: R) -> Result<Index> {
+    pub fn from_stream<R: ReadBytesExt>(mut stream: R) -> Result<Index> {
         let mut magic = [0_u8; 4];
         stream.read_exact(&mut magic)?;
         if magic != [b'B', b'A', b'I', 1] {
@@ -159,14 +167,15 @@ impl Index {
         }
 
         let n_ref = stream.read_i32::<LittleEndian>()?;
-        let references = (0..n_ref).map(|_| Reference::new(&mut stream)).collect::<Result<_>>()?;
+        let references = (0..n_ref).map(|_| Reference::from_stream(&mut stream))
+            .collect::<Result<_>>()?;
         let n_unmapped = stream.read_u64::<LittleEndian>().ok();
         Ok(Index { references, n_unmapped })
     }
 
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Index> {
         let f = File::open(&path)?;
-        Index::new(f)
+        Index::from_stream(f)
     }
 
     pub fn fetch_chunks(&self, ref_id: i32, start: i32, end: i32) -> Vec<Chunk> {
