@@ -4,6 +4,8 @@ use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+use super::cigar::Cigar;
+
 pub enum IntegerType {
     I8,
     U8,
@@ -212,7 +214,7 @@ pub struct Record {
     template_len: i32,
 
     name: Vec<u8>,
-    cigar: Vec<u32>,
+    cigar: Cigar,
     seq: Sequence,
     qual: Qualities,
     tags: Vec<Tag>,
@@ -229,7 +231,7 @@ impl From<io::Error> for Error {
     }
 }
 
-unsafe fn resize<T>(v: &mut Vec<T>, new_len: usize) {
+pub(crate) unsafe fn resize<T>(v: &mut Vec<T>, new_len: usize) {
     if v.capacity() < new_len {
         v.reserve(new_len - v.len());
     }
@@ -248,7 +250,7 @@ impl Record {
             template_len: 0,
 
             name: Vec::new(),
-            cigar: Vec::new(),
+            cigar: Cigar::new(),
             seq: Sequence::new(),
             qual: Qualities::new(),
             tags: Vec::new(),
@@ -307,18 +309,17 @@ impl Record {
         }
         self.template_len = stream.read_i32::<LittleEndian>()?;
 
-        let seq_len = (qual_len + 1) / 2;
         unsafe {
             resize(&mut self.name, name_len as usize - 1);
-            resize(&mut self.cigar, cigar_len as usize);
         }
-
         stream.read_exact(&mut self.name)?;
         let _null_symbol = stream.read_u8()?;
-        stream.read_u32_into::<LittleEndian>(&mut self.cigar)?;
+
+        self.cigar.fill_from(stream, cigar_len as usize)?;
         self.seq.fill_from(stream, qual_len)?;
         self.qual.fill_from(stream, qual_len)?;
 
+        let seq_len = (qual_len + 1) / 2;
         let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
             - seq_len - qual_len;
         let mut tags_vec = vec![0; remaining_size];
