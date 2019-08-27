@@ -109,6 +109,50 @@ impl Tag {
     }
 }
 
+pub struct Sequence {
+    data: Vec<u8>,
+    len: usize,
+}
+
+impl Sequence {
+    fn new() -> Self {
+        Sequence {
+            data: Vec::new(),
+            len: 0,
+        }
+    }
+
+    fn fill_from<R: Read>(&mut self, stream: &mut R, expanded_len: usize) -> io::Result<()> {
+        let short_len = (expanded_len + 1) / 2;
+        unsafe {
+            resize(&mut self.data, short_len);
+        }
+        stream.read_exact(&mut self.data)?;
+        self.len = expanded_len;
+        Ok(())
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        (0..self.len).map(|i| self.at(i)).collect()
+    }
+
+    pub fn at(&self, index: usize) -> u8 {
+        if index >= self.len {
+            panic!("Index out of range ({} >= {})", index, self.len);
+        }
+        let nt = if index % 2 == 0 {
+            self.data[index / 2] >> 4
+        } else {
+            self.data[index / 2] & 0x0f
+        };
+        b"=ACMGRSVTWYHKDBN"[nt as usize]
+    }
+}
+
 pub const READ_PAIRED: u16 = 0x1;
 pub const ALL_SEGMENTS_ALIGNED: u16 = 0x2;
 pub const READ_UNMAPPED: u16 = 0x4;
@@ -133,7 +177,7 @@ pub struct Record {
 
     name: Vec<u8>,
     cigar: Vec<u32>,
-    seq: Vec<u8>,
+    seq: Sequence,
     qual: Vec<u8>,
     tags: Vec<Tag>,
 }
@@ -169,7 +213,7 @@ impl Record {
 
             name: Vec::new(),
             cigar: Vec::new(),
-            seq: Vec::new(),
+            seq: Sequence::new(),
             qual: Vec::new(),
             tags: Vec::new(),
         }
@@ -231,14 +275,13 @@ impl Record {
         unsafe {
             resize(&mut self.name, name_len as usize - 1);
             resize(&mut self.cigar, cigar_len as usize);
-            resize(&mut self.seq, seq_len);
             resize(&mut self.qual, qual_len);
         }
 
         stream.read_exact(&mut self.name)?;
         let _null_symbol = stream.read_u8()?;
         stream.read_u32_into::<LittleEndian>(&mut self.cigar)?;
-        stream.read_exact(&mut self.seq)?;
+        self.seq.fill_from(stream, qual_len)?;
         stream.read_exact(&mut self.qual)?;
 
         let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
@@ -263,6 +306,8 @@ impl Display for Record {
         // TODO: Reference name
         write!(f, "{name}\t{flag}\t{ref}\t{pos}\t{mapq}", name=name, flag=self.flag,
             ref=self.ref_id, pos=self.pos, mapq=self.mapq)?;
+        writeln!(f)?;
+        writeln!(f, "Sequence: {}", std::str::from_utf8(&self.seq.to_vec()).unwrap())?;
         writeln!(f)
     }
 }
