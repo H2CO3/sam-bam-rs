@@ -10,32 +10,37 @@ use lru_cache::LruCache;
 
 use super::index::{Chunk, VirtualOffset};
 
-const MAX_BLOCK_SIZE: usize = 65536;
+/// Biggest possible compressed and uncompressed size
+pub const MAX_BLOCK_SIZE: usize = 65536;
 
 fn as_u16(buffer: &[u8], start: usize) -> u16 {
     buffer[start] as u16 + ((buffer[start + 1] as u16) << 8)
 }
 
+/// BGzip block. Both uncompressed and compressed size should not be bigger than
+/// `MAX_BLOCK_SIZE = 65536`.
 pub struct Block {
     compressed_size: usize,
     uncompr_data: Vec<u8>,
 }
 
 impl Block {
-    fn new() -> Block {
+    #[doc(hidden)]
+    pub fn new() -> Block {
         Block {
             compressed_size: 0,
             uncompr_data: Vec::with_capacity(MAX_BLOCK_SIZE),
         }
     }
 
-    /// Load bgzip block from `stream` into `self`. Returns the loaded block size
+    /// Load bgzip block from `stream` into `self`.
     ///
     /// # Arguments
     ///
     /// * `reading_buffer` - Buffer for reading the compressed block.
     ///     It should have length >= `MAX_BLOCK_SIZE`
-    fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<()> {
+    #[doc(hidden)]
+    pub fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<()> {
         debug_assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
         debug_assert!(self.uncompr_data.capacity() >= MAX_BLOCK_SIZE);
         self.uncompr_data.clear();
@@ -112,19 +117,23 @@ impl Block {
         Err(Error::new(InvalidData, "bgzip::Block has an invalid header"))
     }
 
+    /// Return uncompressed contents in the 0-based half-open interval `[start-end)`
     pub fn contents(&self, start: usize, end: usize) -> &[u8] {
         &self.uncompr_data[start..end]
     }
 
+    /// Return the uncompressed size.
     pub fn uncompressed_size(&self) -> usize {
         self.uncompr_data.len()
     }
 
+    /// Return the compressed size.
     pub fn compressed_size(&self) -> usize {
         self.compressed_size
     }
 }
 
+/// BGzip file reader, which allows to open bgzip blocks given an offset.
 pub struct SeekReader<R: Read + Seek> {
     stream: R,
     cache: LruCache<u64, Block>,
@@ -132,6 +141,7 @@ pub struct SeekReader<R: Read + Seek> {
 }
 
 impl SeekReader<File> {
+    /// Open the reader from the `path`.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let stream = File::open(path)
             .map_err(|e| Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
@@ -142,6 +152,7 @@ impl SeekReader<File> {
 const LRU_CAPACITY: usize = 1000;
 
 impl<R: Read + Seek> SeekReader<R> {
+    /// Open the reader from the `stream`. The stream should be open as long as the reader.
     pub fn from_stream(stream: R) -> Result<Self> {
         Ok(SeekReader {
             stream,
@@ -150,6 +161,8 @@ impl<R: Read + Seek> SeekReader<R> {
         })
     }
 
+    /// Get a bgzip block using `offset` into the file.
+    /// Blocks are cached, so it should be unexpensive to consecutively ask for the same blocks.
     pub fn get_block<'a>(&'a mut self, offset: u64) -> Result<&'a Block> {
         if self.cache.contains_key(&offset) {
             return Ok(self.cache.get_mut(&offset)

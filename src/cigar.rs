@@ -3,6 +3,7 @@ use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
+/// Cigar operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     AlnMatch = 0,
@@ -17,6 +18,9 @@ pub enum Operation {
 }
 
 impl Operation {
+    /// Convert `u8` symbol (for example `b'M'`) into [Operation](enum.Operation.html).
+    ///
+    /// To convert a number `0-8` into [Operation](enum.Operation.html) use `Operation::from(number)`.
     pub fn from_symbol(symbol: u8) -> Operation {
         use Operation::*;
         match symbol {
@@ -33,10 +37,14 @@ impl Operation {
         }
     }
 
+    /// Convert [Operation](enum.Operation.html) into `u8` symbol (for example `b'M'`).
+    ///
+    /// To convert [Operation](enum.Operation.html) into a number `0-8` use `operation as u8`.
     pub fn to_byte(self) -> u8 {
         b"MIDNSHP=X"[self as usize]
     }
 
+    /// Checks if the operation consumes query. For example, `M` consumes query, while `D` does not.
     pub fn consumes_query(&self) -> bool {
         match self {
             Operation::AlnMatch
@@ -48,6 +56,8 @@ impl Operation {
         }
     }
 
+    /// Checks if the operation consumes reference.
+    /// For example, `M` consumes reference, while `I` does not.
     pub fn consumes_ref(&self) -> bool {
         match self {
             Operation::AlnMatch
@@ -84,6 +94,7 @@ impl From<u32> for Operation {
     }
 }
 
+/// A wrapper around raw Cigar.
 pub struct Cigar(Vec<u32>);
 
 impl Cigar {
@@ -100,24 +111,32 @@ impl Cigar {
         Ok(())
     }
 
+    /// Returns a pair `(length, operation)` by its index.
     pub fn at(&self, index: usize) -> (u32, Operation) {
         let v = self.0[index];
         (v >> 4, Operation::from(v & 0xf))
     }
 
+    /// Returns an iterator over typles `(length, operation)`.
     pub fn iter(&self) -> impl Iterator<Item = (u32, Operation)> + '_ {
         (0..self.0.len()).map(move |i| self.at(i))
     }
 
+    /// Cigar length.
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// Returns raw Cigar. Each `u32` value represents `length << 4 | operation`, where
+    /// operations are encoded from 0 to 8.
     pub fn raw(&self) -> &[u32] {
         &self.0
     }
 
-    pub fn calculate_aln_len(&self) -> u32 {
+    /// Calculates reference alignment length. Consider using
+    /// [Record::calculate_end](../record/struct.Record.html#method.calculate_end), as the
+    /// record alignment end is stored once calculated.
+    pub fn calculate_aligned_len(&self) -> u32 {
         self.iter().map(|(len, op)| if op.consumes_ref() { len } else { 0 }).sum::<u32>()
     }
 }

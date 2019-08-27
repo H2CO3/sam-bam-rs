@@ -428,7 +428,7 @@ impl Record {
         } else if let Some(end) = self.end {
             end
         } else {
-            let end = self.start + self.cigar.calculate_aln_len() as i32;
+            let end = self.start + self.cigar.calculate_aligned_len() as i32;
             self.end = Some(end);
             end
         }
