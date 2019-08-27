@@ -182,7 +182,6 @@ impl Index {
         let mut chunks = Vec::new();
         for bin_id in region_to_bins(start, end).into_iter() {
             if let Some(bin) = self.references[ref_id as usize].bins.get(&bin_id) {
-                println!("Adding bin {}:   {:?}", bin_id, bin.chunks);
                 chunks.extend(bin.chunks.iter());
             }
         }

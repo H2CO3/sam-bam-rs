@@ -102,7 +102,7 @@ impl Cigar {
 
     pub fn at(&self, index: usize) -> (u32, Operation) {
         let v = self.0[index];
-        (v >> 4, Operation::from(v & 0xff))
+        (v >> 4, Operation::from(v & 0xf))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u32, Operation)> + '_ {
@@ -124,6 +124,9 @@ impl Cigar {
 
 impl Display for Cigar {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        if self.len() == 0 {
+            return write!(f, "*");
+        }
         for (len, op) in self.iter() {
             write!(f, "{}{}", len, op)?;
         }

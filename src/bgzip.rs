@@ -113,7 +113,6 @@ impl Block {
     }
 
     pub fn contents(&self, start: usize, end: usize) -> &[u8] {
-        println!("    Returning contents [{}..{}]", start, end);
         &self.uncompr_data[start..end]
     }
 
@@ -152,14 +151,11 @@ impl<R: Read + Seek> SeekReader<R> {
     }
 
     pub fn get_block<'a>(&'a mut self, offset: u64) -> Result<&'a Block> {
-        println!("Getting block: {}", offset);
         if self.cache.contains_key(&offset) {
-            println!("    Cache hit");
             return Ok(self.cache.get_mut(&offset)
                 .expect("Cache should contain the requested block"));
         }
 
-        println!("    Cache miss");
         self.stream.seek(SeekFrom::Start(offset))?;
         let mut block = Block::new();
         block.fill(&mut self.stream, &mut self.reading_buffer)?;
@@ -209,11 +205,7 @@ impl<'a, R: Read + Seek> ChunksReader<'a, R> {
 
 impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        println!("Read query: length {}", buf.len());
-
         loop {
-            println!("    Current status: chunk ix: {},  block_offset: {},  in_block_offset: {}",
-                self.chunk_ix, self.block_offset, self.in_block_offset);
             if self.chunk_ix >= self.chunks.len() {
                 return Ok(0);
             }
@@ -249,14 +241,11 @@ impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
 
         let mut bytes = if chunk.end().compr_offset() == self.block_offset {
             // Last block in a chunk
-            println!("  Last block, end = {}", chunk.end().uncompr_offset());
             chunk.end().uncompr_offset() as usize - self.in_block_offset
         } else {
-            println!("  Not last block, end = {}", self.uncompr_block_size);
             self.uncompr_block_size - self.in_block_offset
         };
         bytes = min(bytes, buf.len());
-        println!("  Loading {} bytes", bytes);
         buf[..bytes].copy_from_slice(
             block.contents(self.in_block_offset, self.in_block_offset + bytes));
         self.in_block_offset += bytes;

@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, Result, Error, BufReader};
+use std::io::{Read, Seek, Result, Error, BufReader, Write};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::result;
@@ -10,6 +10,7 @@ use super::index::Index;
 use super::record;
 use super::bgzip;
 
+#[derive(Clone)]
 pub struct Header {
     text: Vec<u8>,
     references: Vec<String>,
@@ -157,5 +158,10 @@ impl<R: Read + Seek> IndexedReader<R> {
 
     pub fn header(&self) -> &Header {
         &self.header
+    }
+
+    pub fn write_record_as_sam<W: Write>(&self, writer: &mut W, record: &record::Record)
+            -> Result<()> {
+        record.write_sam(writer, self.header())
     }
 }

@@ -1,10 +1,11 @@
-use std::io::{self, Read, ErrorKind};
+use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::InvalidData;
 use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use super::cigar::Cigar;
+use super::bam_reader::Header;
 
 pub enum IntegerType {
     I8,
@@ -220,6 +221,20 @@ impl Sequence {
     }
 }
 
+impl Display for Sequence {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        if self.data.len() == 0 {
+            write!(f, "*")
+        } else {
+            for i in 0..self.len {
+                write!(f, "{}", self.at(i) as char)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+
 pub struct Qualities(Vec<u8>);
 
 impl Qualities {
@@ -237,6 +252,19 @@ impl Qualities {
 
     pub fn to_readable(&self) -> Vec<u8> {
         self.0.iter().map(|qual| qual + 33).collect()
+    }
+}
+
+impl Display for Qualities {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        if self.0.len() == 0 || self.0[0] == 0xff {
+            write!(f, "*")
+        } else {
+            for &qual in self.0.iter() {
+                write!(f, "{}", (qual + 33) as char)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -392,20 +420,36 @@ impl Record {
             Some(&self.qual)
         }
     }
-}
 
-impl Display for Record {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+    pub fn write_sam<W: Write>(&self, f: &mut W, header: &Header) -> io::Result<()> {
         let name = unsafe {
             std::str::from_utf8_unchecked(&self.name)
         };
+        write!(f, "{}\t{}\t", name, self.flag)?;
+        if self.ref_id < 0 {
+            write!(f, "*\t")?;
+        } else {
+            write!(f, "{}\t", header.reference_name(self.ref_id as usize)
+                .ok_or_else(|| io::Error::new(InvalidData,
+                "Record has a reference id not in the header"))?)?;
+        }
+        write!(f, "{}\t{}\t", self.pos + 1, self.mapq)?;
+        write!(f, "{}\t", self.cigar)?;
 
-        // TODO: Reference name
-        write!(f, "{name}\t{flag}\t{ref}\t{pos}\t{mapq}", name=name, flag=self.flag,
-            ref=self.ref_id, pos=self.pos, mapq=self.mapq)?;
-        writeln!(f)?;
-        writeln!(f, "Sequence: {}", std::str::from_utf8(&self.seq.to_vec()).unwrap())?;
-        writeln!(f, "Qualities: {}", std::str::from_utf8(&self.qual.to_readable()).unwrap())?;
+        if self.next_ref_id < 0 {
+            write!(f, "*\t")?;
+        } else if self.next_ref_id == self.ref_id {
+            write!(f, "=\t")?;
+        } else {
+            write!(f, "{}\t", header.reference_name(self.next_ref_id as usize)
+                .ok_or_else(|| io::Error::new(InvalidData,
+                "Record has a reference id not in the header"))?)?;
+        }
+        write!(f, "{}\t{}\t", self.next_pos + 1, self.template_len)?;
+        write!(f, "{}\t{}", self.seq, self.qual)?;
+        for tag in self.tags.iter() {
+            write!(f, "\t{}", tag)?;
+        }
         writeln!(f)
     }
 }
