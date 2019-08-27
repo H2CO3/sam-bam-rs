@@ -140,6 +140,10 @@ impl Sequence {
         (0..self.len).map(|i| self.at(i)).collect()
     }
 
+    pub fn to_vec_acgtn_only(&self) -> Vec<u8> {
+        (0..self.len).map(|i| self.at_acgtn_only(i)).collect()
+    }
+
     pub fn at(&self, index: usize) -> u8 {
         if index >= self.len {
             panic!("Index out of range ({} >= {})", index, self.len);
@@ -150,6 +154,38 @@ impl Sequence {
             self.data[index / 2] & 0x0f
         };
         b"=ACMGRSVTWYHKDBN"[nt as usize]
+    }
+
+    pub fn at_acgtn_only(&self, index: usize) -> u8 {
+        if index >= self.len {
+            panic!("Index out of range ({} >= {})", index, self.len);
+        }
+        let nt = if index % 2 == 0 {
+            self.data[index / 2] >> 4
+        } else {
+            self.data[index / 2] & 0x0f
+        };
+        b"=ACNGNNNTNNNNNNN"[nt as usize]
+    }
+}
+
+pub struct Qualities(Vec<u8>);
+
+impl Qualities {
+    fn new() -> Self {
+        Qualities(Vec::new())
+    }
+
+    fn fill_from<R: Read>(&mut self, stream: &mut R, len: usize) -> io::Result<()> {
+        unsafe {
+            resize(&mut self.0, len);
+        }
+        stream.read_exact(&mut self.0)?;
+        Ok(())
+    }
+
+    pub fn to_readable(&self) -> Vec<u8> {
+        self.0.iter().map(|qual| qual + 33).collect()
     }
 }
 
@@ -178,7 +214,7 @@ pub struct Record {
     name: Vec<u8>,
     cigar: Vec<u32>,
     seq: Sequence,
-    qual: Vec<u8>,
+    qual: Qualities,
     tags: Vec<Tag>,
 }
 
@@ -214,7 +250,7 @@ impl Record {
             name: Vec::new(),
             cigar: Vec::new(),
             seq: Sequence::new(),
-            qual: Vec::new(),
+            qual: Qualities::new(),
             tags: Vec::new(),
         }
     }
@@ -275,14 +311,13 @@ impl Record {
         unsafe {
             resize(&mut self.name, name_len as usize - 1);
             resize(&mut self.cigar, cigar_len as usize);
-            resize(&mut self.qual, qual_len);
         }
 
         stream.read_exact(&mut self.name)?;
         let _null_symbol = stream.read_u8()?;
         stream.read_u32_into::<LittleEndian>(&mut self.cigar)?;
         self.seq.fill_from(stream, qual_len)?;
-        stream.read_exact(&mut self.qual)?;
+        self.qual.fill_from(stream, qual_len)?;
 
         let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
             - seq_len - qual_len;
@@ -294,6 +329,18 @@ impl Record {
             self.tags.push(Tag::from_stream(&mut tags_reader)?);
         }
         Ok(())
+    }
+
+    pub fn sequence(&self) -> &Sequence {
+        &self.seq
+    }
+
+    pub fn qualities(&self) -> Option<&Qualities> {
+        if self.qual.0.len() == 0 || self.qual.0[0] == 0xff {
+            None
+        } else {
+            Some(&self.qual)
+        }
     }
 }
 
@@ -308,6 +355,7 @@ impl Display for Record {
             ref=self.ref_id, pos=self.pos, mapq=self.mapq)?;
         writeln!(f)?;
         writeln!(f, "Sequence: {}", std::str::from_utf8(&self.seq.to_vec()).unwrap())?;
+        writeln!(f, "Qualities: {}", std::str::from_utf8(&self.qual.to_readable()).unwrap())?;
         writeln!(f)
     }
 }
