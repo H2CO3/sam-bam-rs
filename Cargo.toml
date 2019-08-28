@@ -8,7 +8,6 @@ repository = "https://gitlab.com/tprodanov/bam"
 readme = "README.md"
 license = "MIT"
 keywords = ["bam", "htslib", "backend", "bio"]
-exclude = ["src/main.rs"]
 
 [profile.test]
 opt-level = 3
