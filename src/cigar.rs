@@ -95,7 +95,7 @@ impl From<u32> for Operation {
 }
 
 /// A wrapper around raw Cigar.
-pub struct Cigar(Vec<u32>);
+pub struct Cigar(pub(crate) Vec<u32>);
 
 impl Cigar {
     pub(crate) fn new() -> Self {

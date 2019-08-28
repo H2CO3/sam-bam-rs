@@ -4,7 +4,7 @@ use std::fmt::{self, Display, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use super::cigar::Cigar;
+use super::cigar::{self, Cigar};
 use super::bam_reader::Header;
 
 /// Enum that represents tag type for the cases when a tag contains integer.
@@ -458,6 +458,31 @@ impl Record {
         let mut tags_reader = &tags_vec[..];
         while tags_reader.len() > 0 {
             self.tags.push(Tag::from_stream(&mut tags_reader)?);
+        }
+        self.replace_cigar_if_needed()?;
+
+        Ok(())
+    }
+
+    /// Replace Cigar by CG tag if Cigar has placeholder *kSmN*.
+    fn replace_cigar_if_needed(&mut self) -> Result<(), Error> {
+        if self.cigar.len() > 0 && self.cigar.at(0) ==
+                (self.seq.len as u32, cigar::Operation::Soft) {
+            if self.cigar.len() != 2 {
+                return Err(Error::Corrupted("Record contains invalid Cigar"));
+            }
+            let (len, op) = self.cigar.at(1);
+            if op != cigar::Operation::Skip {
+                return Err(Error::Corrupted("Record contains invalid Cigar"));
+            }
+            self.end = Some(len as i32);
+
+            let cigar_arr = match self.remove_tag(b"CG") {
+                Some(TagValue::IntArray(arr, _)) => arr,
+                _ => return Err(Error::Corrupted("Record should contain tag CG, but does not")),
+            };
+            self.cigar.0.clear();
+            self.cigar.0.extend(cigar_arr.into_iter().map(|el| el as u32));
         }
         Ok(())
     }
