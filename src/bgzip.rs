@@ -20,16 +20,16 @@ fn as_u16(buffer: &[u8], start: usize) -> u16 {
 /// BGzip block. Both uncompressed and compressed size should not be bigger than
 /// `MAX_BLOCK_SIZE = 65536`.
 pub struct Block {
-    compressed_size: usize,
-    uncompr_data: Vec<u8>,
+    block_size: usize,
+    contents: Vec<u8>,
 }
 
 impl Block {
     #[doc(hidden)]
     pub fn new() -> Block {
         Block {
-            compressed_size: 0,
-            uncompr_data: Vec::with_capacity(MAX_BLOCK_SIZE),
+            block_size: 0,
+            contents: Vec::with_capacity(MAX_BLOCK_SIZE),
         }
     }
 
@@ -41,9 +41,8 @@ impl Block {
     ///     It should have length >= `MAX_BLOCK_SIZE`
     #[doc(hidden)]
     pub fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) -> Result<()> {
-        debug_assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
-        debug_assert!(self.uncompr_data.capacity() >= MAX_BLOCK_SIZE);
-        self.uncompr_data.clear();
+        assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
+        self.contents.clear();
 
         let extra_length = {
             let header = &mut reading_buffer[..12];
@@ -62,29 +61,35 @@ impl Block {
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
         let mut decoder = deflate::Decoder::new(&reading_buffer[12 + extra_length..block_size - 8]);
-        let obs_uncompr_size = decoder.read_to_end(&mut self.uncompr_data)
+        let obs_contents_size = decoder.read_to_end(&mut self.contents)
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
         
         let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::new(e.kind(), format!("Corrupted bgzip block ({})", e)))?;
-        let exp_uncompr_size = (&reading_buffer[block_size - 4..block_size])
+        let exp_contents_size = (&reading_buffer[block_size - 4..block_size])
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
+        if exp_contents_size as usize > MAX_BLOCK_SIZE {
+            return Err(Error::new(InvalidData,
+                format!("Corrupted bgzip block. Expected contents > MAX_BLOCK_SIZE ({} > {})",
+                exp_contents_size, MAX_BLOCK_SIZE)));
+        }
 
-        let obs_crc32 = crc::crc32::checksum_ieee(&self.uncompr_data);
+        let obs_crc32 = crc::crc32::checksum_ieee(&self.contents);
         if obs_crc32 != exp_crc32 {
             return Err(Error::new(InvalidData,
                 format!("Corrupted bgzip block. CRC do not match: expected {}, observed {}",
                 exp_crc32, obs_crc32)));
         }
-        if exp_uncompr_size as usize != obs_uncompr_size {
+        if exp_contents_size as usize != obs_contents_size {
             return Err(Error::new(InvalidData,
-                format!("Corrupted bgzip block. Uncompressed size do not: expected {}, observed {}",
-                exp_uncompr_size, obs_uncompr_size)));
+                format!("Corrupted bgzip block. \
+                Uncompressed sizes do not match: expected {}, observed {}",
+                exp_contents_size, obs_contents_size)));
         }
-        debug_assert!(obs_uncompr_size == self.uncompr_data.len());
-        self.compressed_size = block_size;
+        debug_assert!(obs_contents_size == self.contents.len());
+        self.block_size = block_size;
 
         Ok(())
     }
@@ -117,19 +122,19 @@ impl Block {
         Err(Error::new(InvalidData, "bgzip::Block has an invalid header"))
     }
 
-    /// Return uncompressed contents in the 0-based half-open interval `[start-end)`
-    pub fn contents(&self, start: usize, end: usize) -> &[u8] {
-        &self.uncompr_data[start..end]
+    /// Return the uncompressed contents.
+    pub fn contents(&self) -> &[u8] {
+        &self.contents
     }
 
-    /// Return the uncompressed size.
-    pub fn uncompressed_size(&self) -> usize {
-        self.uncompr_data.len()
+    /// Return the size of the uncompressed data (same as `contents().len()`)
+    pub fn contents_size(&self) -> usize {
+        self.contents.len()
     }
 
-    /// Return the compressed size.
-    pub fn compressed_size(&self) -> usize {
-        self.compressed_size
+    /// Return the block size (size of the compressed data).
+    pub fn block_size(&self) -> usize {
+        self.block_size
     }
 }
 
@@ -181,87 +186,103 @@ pub(crate) struct ChunksReader<'a, R: Read + Seek> {
     reader: &'a mut SeekReader<R>,
     chunks: Vec<Chunk>,
     chunk_ix: usize,
+
     block_offset: u64,
-    in_block_offset: usize,
-    compr_block_size: usize,
-    uncompr_block_size: usize,
+    block_size: usize,
+
+    buffer: &'a mut Vec<u8>,
+    buffer_offset: usize,
 }
 
-const OFFSET_UNDEFINED: u64 = std::u64::MAX;
-const BLOCK_SIZE_UNKNOWN: usize = std::usize::MAX;
-
 impl<'a, R: Read + Seek> ChunksReader<'a, R> {
-    pub fn new(reader: &'a mut SeekReader<R>, chunks: Vec<Chunk>) -> Self {
+    pub fn new(reader: &'a mut SeekReader<R>, chunks: Vec<Chunk>, buffer: &'a mut Vec<u8>) -> Self {
+        // Does not change the capacity
+        buffer.clear();
+        assert!(buffer.capacity() >= MAX_BLOCK_SIZE);
         ChunksReader {
-            reader, chunks,
+            reader,
+            chunks,
             chunk_ix: 0,
-            block_offset: OFFSET_UNDEFINED,
-            in_block_offset: 0,
-            compr_block_size: BLOCK_SIZE_UNKNOWN,
-            uncompr_block_size: BLOCK_SIZE_UNKNOWN,
+
+            block_offset: 0,
+            block_size: std::usize::MAX,
+
+            buffer,
+            buffer_offset: 0,
         }
     }
 
-    pub fn without_boundaries(reader: &'a mut SeekReader<R>) -> Self {
-        ChunksReader {
-            reader,
-            chunks: vec![Chunk::new(VirtualOffset::from_raw(0),
-                VirtualOffset::from_raw(std::u64::MAX))],
-            chunk_ix: 0,
-            block_offset: OFFSET_UNDEFINED,
-            in_block_offset: 0,
-            compr_block_size: BLOCK_SIZE_UNKNOWN,
-            uncompr_block_size: BLOCK_SIZE_UNKNOWN,
-        }
+    pub fn without_boundaries(reader: &'a mut SeekReader<R>, buffer: &'a mut Vec<u8>) -> Self {
+        let chunk = Chunk::new(VirtualOffset::from_raw(0), VirtualOffset::from_raw(std::u64::MAX));
+        Self::new(reader, vec![chunk], buffer)
     }
 }
 
 impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if self.buffer_offset < self.buffer.len() {
+            let bytes = min(self.buffer.len() - self.buffer_offset, buf.len());
+            buf[..bytes].copy_from_slice(
+                &self.buffer[self.buffer_offset..self.buffer_offset + bytes]);
+            self.buffer_offset += bytes;
+            return Ok(bytes);
+        }
+
+        // Here, either a block has ended, or a chunk has ended.
+        // Before the first iteration block_size = usize::MAX
+        let mut update_chunk = self.block_size == std::usize::MAX;
         loop {
             if self.chunk_ix >= self.chunks.len() {
                 return Ok(0);
             }
             let chunk = &self.chunks[self.chunk_ix];
-            if self.block_offset == OFFSET_UNDEFINED {
-                self.block_offset = chunk.start().compr_offset();
-                self.in_block_offset = chunk.start().uncompr_offset() as usize;
-            }
 
             // Last block in a chunk
-            if chunk.end().compr_offset() == self.block_offset
-                    && chunk.end().uncompr_offset() as usize == self.in_block_offset {
+            if !update_chunk && self.block_offset == chunk.end().block_offset() {
                 self.chunk_ix += 1;
-                self.block_offset = OFFSET_UNDEFINED;
-                self.in_block_offset = 0;
-                self.compr_block_size = BLOCK_SIZE_UNKNOWN;
-                self.uncompr_block_size = BLOCK_SIZE_UNKNOWN;
+                update_chunk = true;
                 continue;
             }
-            if self.in_block_offset >= self.uncompr_block_size {
-                self.block_offset += self.compr_block_size as u64;
-                self.in_block_offset = 0;
-                self.compr_block_size = BLOCK_SIZE_UNKNOWN;
-                self.uncompr_block_size = BLOCK_SIZE_UNKNOWN;
-                continue;
-            }
-            break;
-        }
-        let chunk = &self.chunks[self.chunk_ix];
-        let block = self.reader.get_block(self.block_offset)?;
-        self.compr_block_size = block.compressed_size();
-        self.uncompr_block_size = block.uncompressed_size();
 
-        let mut bytes = if chunk.end().compr_offset() == self.block_offset {
-            // Last block in a chunk
-            chunk.end().uncompr_offset() as usize - self.in_block_offset
-        } else {
-            self.uncompr_block_size - self.in_block_offset
-        };
-        bytes = min(bytes, buf.len());
-        buf[..bytes].copy_from_slice(
-            block.contents(self.in_block_offset, self.in_block_offset + bytes));
-        self.in_block_offset += bytes;
-        Ok(bytes)
+            let contents_start = if update_chunk {
+                // Starting a new chunk
+                self.block_offset = chunk.start().block_offset();
+                chunk.start().contents_offset() as usize
+            } else {
+                // Starting a new block in the same chunk
+                self.block_offset += self.block_size as u64;
+                0
+            };
+
+            // Chunk ends, no need to load a block
+            if chunk.end().equal(self.block_offset, 0) {
+                self.chunk_ix += 1;
+                update_chunk = true;
+                continue;
+            }
+
+            // Here we start a new block in any case
+            let block = self.reader.get_block(self.block_offset)?;
+            self.block_size = block.block_size();
+
+            let contents_end = if chunk.end().block_offset() == self.block_offset {
+                // End of the chunk is in the current block
+                chunk.end().contents_offset() as usize
+            } else {
+                block.contents_size()
+            };
+            unsafe {
+                self.buffer.set_len(contents_end - contents_start);
+            }
+            self.buffer.copy_from_slice(&block.contents()[contents_start..contents_end]);
+            self.buffer_offset = 0;
+
+            let bytes = min(self.buffer.len() - self.buffer_offset, buf.len());
+            assert!(bytes != 0);
+            buf[..bytes].copy_from_slice(
+                &self.buffer[self.buffer_offset..self.buffer_offset + bytes]);
+            self.buffer_offset += bytes;
+            return Ok(bytes);
+        }
     }
 }

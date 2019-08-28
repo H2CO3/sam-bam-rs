@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, Result, Error, BufReader, Write};
+use std::io::{Read, Seek, Result, Error, Write};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
 use std::result;
@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use super::index::Index;
 use super::record;
-use super::bgzip::{SeekReader, ChunksReader};
+use super::bgzip::{self, SeekReader, ChunksReader};
 
 /// BAM file header. Contains names and lengths of reference sequences.
 #[derive(Clone)]
@@ -102,7 +102,7 @@ impl Header {
 /// If possible, create a single record using [Record::new](../record/struct.Record.html#method.new)
 /// and then use [read_into](#method.read_into) instead of iterating, as it saves time on allocation.
 pub struct RegionViewer<'a, R: Read + Seek> {
-    chunks_reader: BufReader<ChunksReader<'a, R>>,
+    chunks_reader: ChunksReader<'a, R>,
     start: i32,
     end: i32,
     predicate: Box<Fn(&record::Record) -> bool>,
@@ -164,6 +164,7 @@ pub struct IndexedReader<R: Read + Seek> {
     reader: SeekReader<R>,
     header: Header,
     index: Index,
+    buffer: Vec<u8>,
 }
 
 impl IndexedReader<File> {
@@ -194,12 +195,14 @@ impl<R: Read + Seek> IndexedReader<R> {
     }
 
     fn new(mut reader: SeekReader<R>, index: Index) -> Result<Self> {
+        let mut buffer = Vec::with_capacity(bgzip::MAX_BLOCK_SIZE);
         let header = {
-            let mut header_reader = BufReader::new(
-                ChunksReader::without_boundaries(&mut reader));
+            let mut header_reader = ChunksReader::without_boundaries(&mut reader, &mut buffer);
             Header::from_stream(&mut header_reader)?
         };
-        Ok(Self { reader, header, index })
+        Ok(Self {
+            reader, header, index, buffer,
+        })
     }
 
     /// Get an iterator over records aligned to the reference `ref_id` (0-based),
@@ -220,7 +223,7 @@ impl<R: Read + Seek> IndexedReader<R> {
     {
         let chunks = self.index.fetch_chunks(ref_id, start, end);
         RegionViewer {
-            chunks_reader: BufReader::new(ChunksReader::new(&mut self.reader, chunks)),
+            chunks_reader: ChunksReader::new(&mut self.reader, chunks, &mut self.buffer),
             start, end,
             predicate: Box::new(predicate),
         }

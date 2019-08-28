@@ -9,9 +9,12 @@ use std::cmp::{min, max};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-/// Virtual offset. Represents `compressed_offset << 16 | uncompressed_offset`, where
-/// compressed offset is `u48` and represents offset of a bgzip block.
-/// Uncompressed offset is `u16` and represents offset in a single uncompressed block.
+/// Virtual offset. Represents `block_offset << 16 | contents_offset`, where
+/// `block_offset` is `u48` and represents the offset in the bgzip file to the beginning of th 
+/// block (also known as `coffset` or `compressed_offset`).
+///
+/// `contents_offset` is `u16` and represents offset in the uncompressed data in a single block
+/// (also known as `uoffset` or `uncompressed_offset`).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtualOffset(u64);
 
@@ -25,9 +28,9 @@ impl VirtualOffset {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
-    /// Construct Virtual offset from `compr_offset` and `uncompr_offset`.
-    pub fn from(compr_offset: u64, uncompr_offset: u16) -> Self {
-        VirtualOffset(compr_offset << 16 | uncompr_offset as u64)
+    /// Construct Virtual offset from `block_offset` and `contents_offset`.
+    pub fn from(block_offset: u64, contents_offset: u16) -> Self {
+        VirtualOffset(block_offset << 16 | contents_offset as u64)
     }
 
     /// Get the raw value.
@@ -35,20 +38,25 @@ impl VirtualOffset {
         self.0
     }
 
-    /// Get the compressed offset.
-    pub fn compr_offset(&self) -> u64 {
+    /// Get the block offset. Represents the offset in the BGzip file to the beginning of the block.
+    pub fn block_offset(&self) -> u64 {
         self.0 >> 16
     }
 
-    /// Get the uncompressed offset.
-    pub fn uncompr_offset(&self) -> u16 {
+    /// Get the contents offset. Represents the offset into the uncompressed contents of the block.
+    pub fn contents_offset(&self) -> u16 {
         self.0 as u16
+    }
+
+    /// Checks if the `self` is the same as `block_offset << 16 | contents_offset`.
+    pub fn equal(&self, block_offset: u64, contents_offset: u16) -> bool {
+        self.0 == (block_offset << 16 | contents_offset as u64)
     }
 }
 
 impl Display for VirtualOffset {
     fn fmt(&self, f: &mut Formatter) -> result::Result<(), fmt::Error> {
-        write!(f, "c={},u={}", self.compr_offset(), self.uncompr_offset())
+        write!(f, "c={},u={}", self.block_offset(), self.contents_offset())
     }
 }
 
@@ -65,10 +73,14 @@ impl Chunk {
         Chunk { start, end }
     }
 
-    fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R, check: bool) -> Result<Self> {
         let start = VirtualOffset::from_stream(stream)?;
         let end = VirtualOffset::from_stream(stream)?;
-        Ok(Chunk { start, end })
+        if check && end <= start {
+            Err(Error::new(InvalidData, format!("BAI chunk end < start ({}  <  {})", end, start)))
+        } else {
+            Ok(Chunk { start, end })
+        }
     }
 
     /// Check if two chunks intersect.
@@ -117,7 +129,9 @@ impl Bin {
     fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {
         let bin_id = stream.read_u32::<LittleEndian>()?;
         let n_chunks = stream.read_i32::<LittleEndian>()?;
-        let chunks = (0..n_chunks).map(|_| Chunk::from_stream(stream)).collect::<Result<_>>()?;
+        let check_chunks = bin_id != SUMMARY_BIN;
+        let chunks = (0..n_chunks).map(|_| Chunk::from_stream(stream, check_chunks))
+            .collect::<Result<_>>()?;
         Ok(Bin { bin_id, chunks })
     }
 }
@@ -135,7 +149,8 @@ struct Reference {
     bins: HashMap<u32, Bin>,
 }
 
-// const SUMMARY_BIN: u32 = 37450;
+/// Per BAM specification, bin with `bin_id == SUMMARY_BIN` contains summary over the reference.
+const SUMMARY_BIN: u32 = 37450;
 
 impl Reference {
     fn from_stream<R: Read>(stream: &mut R) -> Result<Self> {

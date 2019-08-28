@@ -480,6 +480,10 @@ impl Record {
         }
     }
 
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
     pub fn sequence(&self) -> &Sequence {
         &self.seq
     }
