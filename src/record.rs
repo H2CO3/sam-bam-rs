@@ -1,6 +1,6 @@
 use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::InvalidData;
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Display, Debug, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -330,6 +330,16 @@ pub enum Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         Error::Truncated(e)
+    }
+}
+
+impl Debug for Error {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        match self {
+            Error::NoMoreRecords => write!(f, "No more records"),
+            Error::Corrupted(e) => write!(f, "Corrupted record: {}", e),
+            Error::Truncated(e) => write!(f, "Truncated record: {}", e),
+        }
     }
 }
 
