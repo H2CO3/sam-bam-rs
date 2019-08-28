@@ -22,10 +22,12 @@ fn print_records(records1: &Vec<&str>, records2: &Vec<&str>) {
 }
 
 fn compare_bam(path: &str) {
-    let mut reader = bam::bam_reader::IndexedReader::from_path(path).unwrap();
+    let mut reader = bam::IndexedReader::from_path(path).unwrap();
     let header = reader.header().clone();
 
     const ITERATIONS: usize = 1000;
+
+    let mut record = bam::Record::new();
 
     let mut rng = rand::thread_rng();
     for i in 0..ITERATIONS {
@@ -36,13 +38,18 @@ fn compare_bam(path: &str) {
 
         let mut output1 = Vec::new();
         let mut count = 0;
-        println!("Iteartion {}", i);
+        println!("Iteration {}", i);
         let ref_name = header.reference_name(ref_id).unwrap();
         println!("Fetching {}:{}-{}", ref_name, start + 1, end);
 
         let timer = Instant::now();
-        for record in reader.fetch(ref_id as i32, start, end) {
-            let record = record.unwrap();
+        let mut viewer = reader.fetch(ref_id as i32, start, end);
+        loop {
+            match viewer.read_into(&mut record) {
+                Ok(()) => {},
+                Err(bam::Error::NoMoreRecords) => break,
+                Err(e) => panic!(e),
+            }
             count += 1;
             record.write_sam(&mut output1, &header).unwrap();
         }

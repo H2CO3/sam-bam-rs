@@ -272,3 +272,23 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     }
     res
 }
+
+/// Maximal possible bin value
+pub const MAX_BIN: u16 = 37448;
+
+/// Return a maximal region for a given bin
+pub fn bin_to_region(bin: u16) -> (i32, i32) {
+    if bin == 0 {
+        return (std::i32::MIN, std::i32::MAX);
+    }
+    let mut left = 1;
+    for i in 1..6 {
+        let right = left + (1 << 3 * i);
+        if bin >= left && bin < right {
+            let beg = (bin - left) as i32;
+            return (beg << 29 - 3 * i, beg + 1 << 29 - 3 * i);
+        }
+        left = right;
+    }
+    panic!("Bin id should be not bigger than MAX_BIN ({} > {})", bin, MAX_BIN);
+}

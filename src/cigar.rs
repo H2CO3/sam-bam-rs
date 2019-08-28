@@ -137,7 +137,11 @@ impl Cigar {
     /// [Record::calculate_end](../record/struct.Record.html#method.calculate_end), as the
     /// record alignment end is stored once calculated.
     pub fn calculate_aligned_len(&self) -> u32 {
-        self.iter().map(|(len, op)| if op.consumes_ref() { len } else { 0 }).sum::<u32>()
+        self.0.iter().map(|value| match value & 0xf {
+            0 | 2 | 3 | 7 | 8 => value >> 4,
+            1 | 4 | 5 | 6 => 0,
+            _ => panic!("Unexpected Cigar operation: {}", value & 0xf),
+        }).sum::<u32>()
     }
 
     /// Shrink inner vector

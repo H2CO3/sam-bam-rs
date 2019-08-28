@@ -367,6 +367,7 @@ pub struct Record {
     start: i32,
     end: Option<i32>,
     next_start: i32,
+    bin: u16,
     mapq: u8,
     flag: u16,
     template_len: i32,
@@ -388,6 +389,7 @@ impl Record {
             start: -1,
             end: None,
             next_start: -1,
+            bin: 0,
             mapq: 0,
             flag: 0,
             template_len: 0,
@@ -431,7 +433,7 @@ impl Record {
             return Err(Error::Corrupted("Name length == 0"));
         }
         self.mapq = stream.read_u8()?;
-        let _bin = stream.read_u16::<LittleEndian>()?;
+        self.bin = stream.read_u16::<LittleEndian>()?;
         let cigar_len = stream.read_u16::<LittleEndian>()?;
         self.flag = stream.read_u16::<LittleEndian>()?;
         let qual_len = stream.read_i32::<LittleEndian>()?;
@@ -558,6 +560,11 @@ impl Record {
             self.end = Some(end);
             end
         }
+    }
+
+    /// Returns BAI bin.
+    pub fn bin(&self) -> u16 {
+        self.bin
     }
 
     /// Returns record MAPQ.

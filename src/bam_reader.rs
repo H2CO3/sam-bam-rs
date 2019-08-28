@@ -6,7 +6,7 @@ use std::result;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-use super::index::Index;
+use super::index::{self, Index};
 use super::record;
 use super::bgzip::{self, SeekReader, ChunksReader};
 
@@ -123,14 +123,24 @@ impl<'a, R: Read + Seek> RegionViewer<'a, R> {
     pub fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
             record.fill_from(&mut self.chunks_reader)?;
-            if (self.predicate)(&record) && record.start() < self.end {
-                let record_end = record.calculate_end();
-                if record_end != -1 && record_end < record.start() {
-                    return Err(record::Error::Corrupted("aln_end < aln_start"));
-                }
-                if record_end > self.start {
-                    return Ok(());
-                }
+            if !record.is_mapped() || !(self.predicate)(&record) || record.start() >= self.end {
+                continue;
+            }
+            if record.bin() > index::MAX_BIN {
+                return Err(record::Error::Corrupted(
+                    "Read has BAI bin bigger than max possible value"));
+            }
+            let (min_start, max_end) = index::bin_to_region(record.bin());
+            if min_start >= self.start && max_end <= self.end {
+                return Ok(());
+            }
+
+            let record_end = record.calculate_end();
+            if record_end != -1 && record_end < record.start() {
+                return Err(record::Error::Corrupted("aln_end < aln_start"));
+            }
+            if record_end > self.start {
+                return Ok(());
             }
         }
     }

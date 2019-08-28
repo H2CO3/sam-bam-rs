@@ -10,3 +10,4 @@ pub mod record;
 pub mod bam_reader;
 
 pub use bam_reader::{Header, IndexedReader};
+pub use record::{Record, Error};
