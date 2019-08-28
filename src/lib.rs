@@ -1,7 +1,8 @@
 extern crate byteorder;
 extern crate libflate;
-extern crate crc;
 extern crate lru_cache;
+#[cfg(feature = "check_crc")]
+extern crate crc;
 
 pub mod index;
 pub mod bgzip;

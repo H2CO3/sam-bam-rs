@@ -64,7 +64,7 @@ impl Block {
         let obs_contents_size = decoder.read_to_end(&mut self.contents)
             .map_err(|e| Error::new(e.kind(), format!("Failed to read bgzip block ({})", e)))?;
         
-        let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
+        let _exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()
             .map_err(|e| Error::new(e.kind(), format!("Corrupted bgzip block ({})", e)))?;
         let exp_contents_size = (&reading_buffer[block_size - 4..block_size])
@@ -76,11 +76,13 @@ impl Block {
                 exp_contents_size, MAX_BLOCK_SIZE)));
         }
 
-        let obs_crc32 = crc::crc32::checksum_ieee(&self.contents);
-        if obs_crc32 != exp_crc32 {
-            return Err(Error::new(InvalidData,
-                format!("Corrupted bgzip block. CRC do not match: expected {}, observed {}",
-                exp_crc32, obs_crc32)));
+        #[cfg(feature = "check_crc")] {
+            let obs_crc32 = crc::crc32::checksum_ieee(&self.contents);
+            if obs_crc32 != _exp_crc32 {
+                return Err(Error::new(InvalidData,
+                    format!("Corrupted bgzip block. CRC do not match: expected {}, observed {}",
+                    _exp_crc32, obs_crc32)));
+            }
         }
         if exp_contents_size as usize != obs_contents_size {
             return Err(Error::new(InvalidData,
