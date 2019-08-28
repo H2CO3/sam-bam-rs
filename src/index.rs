@@ -9,12 +9,14 @@ use std::cmp::{min, max};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
-// Virtual Offset
-
+/// Virtual offset. Represents `compressed_offset << 16 | uncompressed_offset`, where
+/// compressed offset is `u48` and represents offset of a bgzip block.
+/// Uncompressed offset is `u16` and represents offset in a single uncompressed block.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtualOffset(u64);
 
 impl VirtualOffset {
+    /// Construct Virtual offset from raw value.
     pub fn from_raw(raw: u64) -> VirtualOffset {
         VirtualOffset(raw)
     }
@@ -23,18 +25,22 @@ impl VirtualOffset {
         Ok(VirtualOffset(stream.read_u64::<LittleEndian>()?))
     }
 
+    /// Construct Virtual offset from `compr_offset` and `uncompr_offset`.
     pub fn from(compr_offset: u64, uncompr_offset: u16) -> Self {
         VirtualOffset(compr_offset << 16 | uncompr_offset as u64)
     }
 
+    /// Get the raw value.
     pub fn raw(&self) -> u64 {
         self.0
     }
 
+    /// Get the compressed offset.
     pub fn compr_offset(&self) -> u64 {
         self.0 >> 16
     }
 
+    /// Get the uncompressed offset.
     pub fn uncompr_offset(&self) -> u16 {
         self.0 as u16
     }
@@ -46,9 +52,7 @@ impl Display for VirtualOffset {
     }
 }
 
-
-// Chunk
-
+/// Chunk `[start-end)`, where `start` and `end` are virtual offsets.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Chunk {
     start: VirtualOffset,
@@ -56,6 +60,7 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    /// Construct a `Chunk` from two virtual offsets.
     pub fn new(start: VirtualOffset, end: VirtualOffset) -> Self {
         Chunk { start, end }
     }
@@ -66,11 +71,13 @@ impl Chunk {
         Ok(Chunk { start, end })
     }
 
-    fn intersects(&self, other: &Chunk) -> bool {
+    /// Check if two chunks intersect.
+    pub fn intersects(&self, other: &Chunk) -> bool {
         self.start < other.end && other.start < self.end
     }
 
-    fn combine(&self, other: &Chunk) -> Chunk {
+    /// Combine two intersecting chunks. Fails if chunks do not intersect.
+    pub fn combine(&self, other: &Chunk) -> Chunk {
         assert!(self.intersects(other), "Cannot combine non-intersecting chunks");
         Chunk {
             start: min(self.start, other.start),
@@ -78,10 +85,12 @@ impl Chunk {
         }
     }
 
+    /// Chunk start.
     pub fn start(&self) -> VirtualOffset {
         self.start
     }
 
+    /// Chunk end.
     pub fn end(&self) -> VirtualOffset {
         self.end
     }
@@ -98,8 +107,6 @@ impl Display for Chunk {
         write!(f, "{{{}__{}}}", self.start, self.end)
     }
 }
-
-// Bin
 
 struct Bin {
     bin_id: u32,
@@ -153,12 +160,14 @@ impl Display for Reference {
     }
 }
 
+/// BAI Index.
 pub struct Index {
     references: Vec<Reference>,
     n_unmapped: Option<u64>,
 }
 
 impl Index {
+    /// Load index from stream
     pub fn from_stream<R: Read>(mut stream: R) -> Result<Index> {
         let mut magic = [0_u8; 4];
         stream.read_exact(&mut magic)?;
@@ -173,11 +182,14 @@ impl Index {
         Ok(Index { references, n_unmapped })
     }
 
+    /// Load index from path
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Index> {
         let f = File::open(&path)?;
         Index::from_stream(f)
     }
 
+    /// For a given region the function returns [chunks](struct.Chunk.html) of BAM file that
+    /// contain all records in the region.
     pub fn fetch_chunks(&self, ref_id: i32, start: i32, end: i32) -> Vec<Chunk> {
         let mut chunks = Vec::new();
         for bin_id in region_to_bins(start, end).into_iter() {
@@ -219,6 +231,7 @@ impl Display for Index {
     }
 }
 
+/// Get BAI bin for the record with alignment `[beg-end)`.
 pub fn region_to_bin(beg: i32, end: i32) -> u32 {
     let end = end - 1;
     let mut res = 0_i32;
@@ -231,6 +244,7 @@ pub fn region_to_bin(beg: i32, end: i32) -> u32 {
     res as u32
 }
 
+/// Get all possible BAI bins for the region `[beg-end)`.
 pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     let end = end - 1;
     let mut res = vec![0];

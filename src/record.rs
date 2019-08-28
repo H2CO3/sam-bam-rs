@@ -7,6 +7,9 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use super::cigar::Cigar;
 use super::bam_reader::Header;
 
+/// Enum that represents tag type for the cases when a tag contains integer.
+///
+/// Possible values are `I8` (`c`), `U8` (`C`), `I16` (`s`), `U16` (`S`), `I32` (`i`) and `U32` (`I`).
 pub enum IntegerType {
     I8,
     U8,
@@ -17,6 +20,7 @@ pub enum IntegerType {
 }
 
 impl IntegerType {
+    /// Return a letter that represents the integer type. For example, `i8` corresponds to `c`.
     pub fn letter(&self) -> u8 {
         use IntegerType::*;
         match self {
@@ -30,6 +34,10 @@ impl IntegerType {
     }
 }
 
+/// Enum with all possible tag values.
+///
+/// If a tag contains integer value, or array with integer values, this enum will store `i64`,
+/// to be able to contain both types `i` (`i32`) and `I` (`u32`).
 pub enum TagValue {
     Char(u8),
     Int(i64, IntegerType),
@@ -75,7 +83,7 @@ impl TagValue {
         }
     }
 
-    pub fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
         use TagValue::*;
         use IntegerType::*;
 
@@ -161,6 +169,10 @@ impl Display for Tag {
     }
 }
 
+/// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
+/// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
+///
+/// Using `Display` on an empty sequence produces `*`.
 pub struct Sequence {
     data: Vec<u8>,
     len: usize,
@@ -184,18 +196,28 @@ impl Sequence {
         Ok(())
     }
 
+    /// Return raw data.
+    pub fn raw(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Return full length of the sequence, O(1).
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Return transformed data, each byte is a single nucleotde, O(n).
     pub fn to_vec(&self) -> Vec<u8> {
         (0..self.len).map(|i| self.at(i)).collect()
     }
 
+    /// Return transformed data with only nucleotides `A`, `C`, `G`, `T` and `N`,
+    /// all other values are transformed into `N`, each byte is a single nucleotde, O(n).
     pub fn to_vec_acgtn_only(&self) -> Vec<u8> {
         (0..self.len).map(|i| self.at_acgtn_only(i)).collect()
     }
 
+    /// Return a nucleotide at the position `index`, represented by a single byte, O(1).
     pub fn at(&self, index: usize) -> u8 {
         if index >= self.len {
             panic!("Index out of range ({} >= {})", index, self.len);
@@ -208,6 +230,8 @@ impl Sequence {
         b"=ACMGRSVTWYHKDBN"[nt as usize]
     }
 
+    /// Return a nucleotide at the position `index`, represented by a single byte, O(1).
+    /// If nucleotide is not `A`, `C`, `G` or `T`, the function returns `N`.
     pub fn at_acgtn_only(&self, index: usize) -> u8 {
         if index >= self.len {
             panic!("Index out of range ({} >= {})", index, self.len);
@@ -217,7 +241,7 @@ impl Sequence {
         } else {
             self.data[index / 2] & 0x0f
         };
-        b"=ACNGNNNTNNNNNNN"[nt as usize]
+        b"NACNGNNNTNNNNNNN"[nt as usize]
     }
 }
 
@@ -234,8 +258,11 @@ impl Display for Sequence {
     }
 }
 
-
-pub struct Qualities(Vec<u8>);
+/// Wrapper around qualities. Raw data can be accessed as `qualities.0`, and it contains
+/// values 0-93, without +33 added.
+///
+/// If `Qualities` are empty or contain `0xff`, the `Display` trait would produce `*`.
+pub struct Qualities(pub Vec<u8>);
 
 impl Qualities {
     fn new() -> Self {
@@ -250,6 +277,7 @@ impl Qualities {
         Ok(())
     }
 
+    /// Return vector with +33 added, O(n).
     pub fn to_readable(&self) -> Vec<u8> {
         self.0.iter().map(|qual| qual + 33).collect()
     }
@@ -281,23 +309,15 @@ pub const READ_FAILS_QC: u16 = 0x200;
 pub const PCR_OR_OPTICAL_DUPLICATE: u16 = 0x400;
 pub const SUPPLEMENTARY: u16 = 0x800;
 
-pub struct Record {
-    ref_id: i32,
-    next_ref_id: i32,
-    start: i32,
-    end: Option<i32>,
-    next_start: i32,
-    mapq: u8,
-    flag: u16,
-    template_len: i32,
-
-    name: Vec<u8>,
-    cigar: Cigar,
-    seq: Sequence,
-    qual: Qualities,
-    tags: Vec<Tag>,
-}
-
+/// Error produced while reading [Record](struct.Record.html).
+///
+/// # Variants
+///
+/// * `NoMoreRecords` - represents `StopIteration`,
+/// * `Corrupted(s)` - shows that reading the record produced impossible values, like negative length
+/// of the sequence. `s` contains additional information about the problem.
+/// * `Truncated(e)` - shows that reading the record was interrupted by `io::Error`.
+/// `e` contains the causing error.
 pub enum Error {
     NoMoreRecords,
     Corrupted(&'static str),
@@ -327,7 +347,26 @@ pub(crate) unsafe fn resize<T>(v: &mut Vec<T>, new_len: usize) {
     v.set_len(new_len);
 }
 
+/// BAM Record
+pub struct Record {
+    ref_id: i32,
+    next_ref_id: i32,
+    start: i32,
+    end: Option<i32>,
+    next_start: i32,
+    mapq: u8,
+    flag: u16,
+    template_len: i32,
+
+    name: Vec<u8>,
+    cigar: Cigar,
+    seq: Sequence,
+    qual: Qualities,
+    tags: Vec<Tag>,
+}
+
 impl Record {
+    /// Create
     pub fn new() -> Record {
         Record {
             ref_id: -1,
@@ -416,6 +455,13 @@ impl Record {
             self.tags.push(Tag::from_stream(&mut tags_reader)?);
         }
         Ok(())
+    }
+
+    pub fn shrink_to_fit(&mut self) {
+        self.name.shrink_to_fit();
+        self.cigar.shrink_to_fit();
+        self.seq.data.shrink_to_fit();
+        self.qual.0.shrink_to_fit();
     }
 
     pub fn start(&self) -> i32 {

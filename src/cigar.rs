@@ -139,6 +139,11 @@ impl Cigar {
     pub fn calculate_aligned_len(&self) -> u32 {
         self.iter().map(|(len, op)| if op.consumes_ref() { len } else { 0 }).sum::<u32>()
     }
+
+    /// Shrink inner vector
+    pub fn shrink_to_fit(&mut self) {
+        self.0.shrink_to_fit();
+    }
 }
 
 impl Display for Cigar {
