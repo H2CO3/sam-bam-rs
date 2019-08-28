@@ -20,7 +20,7 @@ pub enum IntegerType {
 }
 
 impl IntegerType {
-    /// Return a letter that represents the integer type. For example, `i8` corresponds to `c`.
+    /// Returns a letter that represents the integer type. For example, `i8` corresponds to `c`.
     pub fn letter(&self) -> u8 {
         use IntegerType::*;
         match self {
@@ -49,7 +49,7 @@ pub enum TagValue {
 }
 
 impl TagValue {
-    fn vec_from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+    fn vec_from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
         use TagValue::*;
         use IntegerType::*;
 
@@ -79,11 +79,11 @@ impl TagValue {
                 stream.read_f32_into::<LittleEndian>(&mut float_vec)?;
                 Ok(FloatArray(float_vec))
             },
-            _ => Err(io::Error::new(ErrorKind::InvalidData, "Corrupted record: Failed to read a tag")),
+            _ => Err(Error::Corrupted("Failed to read a tag")),
         }
     }
 
-    fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
         use TagValue::*;
         use IntegerType::*;
 
@@ -114,8 +114,7 @@ impl TagValue {
                 }
             },
             b'B' => TagValue::vec_from_stream(stream),
-            _ => Err(io::Error::new(ErrorKind::InvalidData,
-                format!("Corrupted record: Failed to read a tag (tag type = {})", ty as char))),
+            _ => Err(Error::Corrupted("Failed to read a tag (unexpected tag type)")),
         }
     }
 }
@@ -129,7 +128,7 @@ impl Display for TagValue {
             Float(value) => write!(f, "f:{}", value),
             String(value) => write!(f, "Z:{}", std::string::String::from_utf8_lossy(value)),
             Hex(value) => write!(f, "H:{}", std::str::from_utf8(value)
-                .expect("Corrupted read: Hex tag is not in UTF-8")),
+                .expect("Corrupted record: Hex tag is not in UTF-8")),
             IntArray(array, ty) => {
                 write!(f, "B:{}", ty.letter() as char)?;
                 for value in array.iter() {
@@ -154,7 +153,11 @@ struct Tag {
 }
 
 impl Tag {
-    fn from_stream<R: Read>(stream: &mut R) -> io::Result<Self> {
+    fn new(key: [u8; 2], value: TagValue) -> Self {
+        Tag { key, value }
+    }
+
+    fn from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
         let mut key = [0_u8; 2];
         stream.read_exact(&mut key)?;
         let value = TagValue::from_stream(stream)?;
@@ -196,28 +199,28 @@ impl Sequence {
         Ok(())
     }
 
-    /// Return raw data.
+    /// Returns raw data.
     pub fn raw(&self) -> &[u8] {
         &self.data
     }
 
-    /// Return full length of the sequence, O(1).
+    /// Returns full length of the sequence, O(1).
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Return transformed data, each byte is a single nucleotde, O(n).
+    /// Returns transformed data, each byte is a single nucleotde, O(n).
     pub fn to_vec(&self) -> Vec<u8> {
         (0..self.len).map(|i| self.at(i)).collect()
     }
 
-    /// Return transformed data with only nucleotides `A`, `C`, `G`, `T` and `N`,
+    /// Returns transformed data with only nucleotides `A`, `C`, `G`, `T` and `N`,
     /// all other values are transformed into `N`, each byte is a single nucleotde, O(n).
     pub fn to_vec_acgtn_only(&self) -> Vec<u8> {
         (0..self.len).map(|i| self.at_acgtn_only(i)).collect()
     }
 
-    /// Return a nucleotide at the position `index`, represented by a single byte, O(1).
+    /// Returns a nucleotide at the position `index`, represented by a single byte, O(1).
     pub fn at(&self, index: usize) -> u8 {
         if index >= self.len {
             panic!("Index out of range ({} >= {})", index, self.len);
@@ -230,7 +233,7 @@ impl Sequence {
         b"=ACMGRSVTWYHKDBN"[nt as usize]
     }
 
-    /// Return a nucleotide at the position `index`, represented by a single byte, O(1).
+    /// Returns a nucleotide at the position `index`, represented by a single byte, O(1).
     /// If nucleotide is not `A`, `C`, `G` or `T`, the function returns `N`.
     pub fn at_acgtn_only(&self, index: usize) -> u8 {
         if index >= self.len {
@@ -334,8 +337,8 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         match self {
             Error::NoMoreRecords => write!(f, "No more records"),
-            Error::Corrupted(e) => write!(f, "Corrupted read: {}", e),
-            Error::Truncated(e) => write!(f, "Truncated read: {}", e),
+            Error::Corrupted(e) => write!(f, "Corrupted record: {}", e),
+            Error::Truncated(e) => write!(f, "Truncated record: {}", e),
         }
     }
 }
@@ -366,7 +369,8 @@ pub struct Record {
 }
 
 impl Record {
-    /// Create
+    /// Creates an empty record. Can be filled using
+    /// [read_into](../bam_reader/struct.RegionViewer.html#method.read_into).
     pub fn new() -> Record {
         Record {
             ref_id: -1,
@@ -386,7 +390,8 @@ impl Record {
         }
     }
 
-    pub fn fill_from<R: Read>(&mut self, stream: &mut R) -> Result<(), Error> {
+    /// Fills the record from a `stream` of uncompressed BAM contents.
+    pub(crate) fn fill_from<R: Read>(&mut self, stream: &mut R) -> Result<(), Error> {
         let block_size = match stream.read_i32::<LittleEndian>() {
             Ok(value) => {
                 if value < 0 {
@@ -457,6 +462,9 @@ impl Record {
         Ok(())
     }
 
+    /// Shrinks record contents. The more records were read into the same `Record` instance, the
+    /// bigger would be inner vectors (to save time on memory allocation).
+    /// Use this function if you do not plan to read into this record in the future.
     pub fn shrink_to_fit(&mut self) {
         self.name.shrink_to_fit();
         self.cigar.shrink_to_fit();
@@ -464,10 +472,47 @@ impl Record {
         self.qual.0.shrink_to_fit();
     }
 
+    /// Returns record name as bytes.
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    /// Returns record sequence.
+    pub fn sequence(&self) -> &Sequence {
+        &self.seq
+    }
+
+    /// Returns record qualities, if present.
+    pub fn qualities(&self) -> Option<&Qualities> {
+        if self.qual.0.len() == 0 || self.qual.0[0] == 0xff {
+            None
+        } else {
+            Some(&self.qual)
+        }
+    }
+
+    /// Returns record CIGAR (can be empty).
+    pub fn cigar(&self) -> &Cigar {
+        &self.cigar
+    }
+
+    /// Returns 0-based reference index. Returns -1 for unmapped records.
+    pub fn ref_id(&self) -> i32 {
+        self.ref_id
+    }
+
+    /// Returns 0-based left-most aligned reference position. Same as *POS - 1* in SAM specification.
+    /// Returns -1 for unmapped records.
     pub fn start(&self) -> i32 {
         self.start
     }
 
+    /// For a mapped read aligned to reference positions `[start-end)`, the function returns `end`.
+    /// The first calculation takes O(n), where *n* is the length of Cigar.
+    /// Consecutive calculations take O(1).
+    /// If the read was fetched from a specific region, it should have `end` already calculated.
+    ///
+    /// Returns -1 for unmapped records.
     pub fn calculate_end(&mut self) -> i32 {
         if self.cigar.len() == 0 {
             -1
@@ -480,26 +525,69 @@ impl Record {
         }
     }
 
-    pub fn name(&self) -> &[u8] {
-        &self.name
+    /// Returns record MAPQ.
+    pub fn mapq(&self) -> u8 {
+        self.mapq
     }
 
-    pub fn sequence(&self) -> &Sequence {
-        &self.seq
+    /// Returns 0-based reference index for the pair record. Returns -1 for unmapped records,
+    /// and records without a pair.
+    pub fn next_ref_id(&self) -> i32 {
+        self.next_ref_id
     }
 
-    pub fn qualities(&self) -> Option<&Qualities> {
-        if self.qual.0.len() == 0 || self.qual.0[0] == 0xff {
-            None
-        } else {
-            Some(&self.qual)
+    /// Returns 0-based left-most aligned reference position for the pair record.
+    /// Same as *PNEXT - 1* in SAM specification.
+    /// Returns -1 for unmapped records and records without a pair.
+    pub fn next_start(&self) -> i32 {
+        self.next_start
+    }
+
+    /// Observed template length (TLEN in SAM specification).
+    pub fn template_len(&self) -> i32 {
+        self.template_len
+    }
+
+    /// Return [tag value](enum.TagValue.html) with `tag_name`, if there is one. Takes `O(n_tags)`.
+    pub fn get_tag(&self, tag_name: &[u8; 2]) -> Option<&TagValue> {
+        for tag in self.tags.iter() {
+            if &tag.key == tag_name {
+                return Some(&tag.value);
+            }
         }
+        None
     }
 
-    pub fn cigar(&self) -> &Cigar {
-        &self.cigar
+    /// Remove tag and return its value. Returns `None`, if the record does not contain such tag.
+    /// Takes `O(n_tags)`.
+    pub fn remove_tag(&mut self, tag_name: &[u8; 2]) -> Option<TagValue> {
+        for i in 0..self.tags.len() {
+            if &self.tags[i].key == tag_name {
+                return Some(self.tags.remove(i).value);
+            }
+        }
+        None
     }
 
+    /// Add a tag and its value. Does not check if the tag already exists. Takes O(1).
+    pub fn push_tag(&mut self, tag_name: &[u8; 2], value: TagValue) {
+        self.tags.push(Tag::new(*tag_name, value))
+    }
+
+    /// Add a tag and its value. Replaces an existing tag if there was one and pushes
+    /// the new tag to the end otherwise. Takes `O(n_tags)`. Returns old value, if there was one.
+    pub fn replace_tag(&mut self, tag_name: &[u8; 2], value: TagValue) -> Option<TagValue> {
+        for i in 0..self.tags.len() {
+            if &self.tags[i].key == tag_name {
+                return Some(std::mem::replace(&mut self.tags[i].value, value));
+            }
+        }
+        None
+    }
+
+    /// Write the record in SAM format to `f`. The function needs
+    /// [header](../bam_reader/struct.Header.html), as the record itself does not store reference
+    /// names.
     pub fn write_sam<W: Write>(&self, f: &mut W, header: &Header) -> io::Result<()> {
         let name = unsafe {
             std::str::from_utf8_unchecked(&self.name)

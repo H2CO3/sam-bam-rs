@@ -94,6 +94,10 @@ impl Block {
         Ok(())
     }
 
+    fn clear(&mut self) {
+        self.block_size = 0;
+    }
+
     /// Analyzes 12 heades bytes of a block.
     /// Returns XLEN - total length of extra subfields.
     fn analyze_header(header: &[u8]) -> Result<u16> {
@@ -143,6 +147,7 @@ pub struct SeekReader<R: Read + Seek> {
     stream: R,
     cache: LruCache<u64, Block>,
     reading_buffer: Vec<u8>,
+    empty_blocks: Vec<Block>,
 }
 
 impl SeekReader<File> {
@@ -163,6 +168,7 @@ impl<R: Read + Seek> SeekReader<R> {
             stream,
             cache: LruCache::new(LRU_CAPACITY),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
+            empty_blocks: Vec::new(),
         })
     }
 
@@ -175,14 +181,20 @@ impl<R: Read + Seek> SeekReader<R> {
         }
 
         self.stream.seek(SeekFrom::Start(offset))?;
-        let mut block = Block::new();
-        block.fill(&mut self.stream, &mut self.reading_buffer)?;
-        self.cache.insert(offset, block);
+        let mut new_block = self.empty_blocks.pop().unwrap_or_else(|| Block::new());
+        new_block.fill(&mut self.stream, &mut self.reading_buffer)?;
+
+        if let Some(mut old_block) = self.cache.insert(offset, new_block) {
+            old_block.clear();
+            self.empty_blocks.push(old_block);
+        }
         Ok(self.cache.get_mut(&offset).expect("Cache should contain the requested block"))
     }
 }
 
-pub(crate) struct ChunksReader<'a, R: Read + Seek> {
+/// Reader of Bgzip blocks given for a vector of [chunks](../index/struct.Chunk.html).
+/// Wrapper of [SeekReader](struct.SeekReader.html).
+pub struct ChunksReader<'a, R: Read + Seek> {
     reader: &'a mut SeekReader<R>,
     chunks: Vec<Chunk>,
     chunk_ix: usize,
@@ -195,6 +207,10 @@ pub(crate) struct ChunksReader<'a, R: Read + Seek> {
 }
 
 impl<'a, R: Read + Seek> ChunksReader<'a, R> {
+    /// Create a Reader that consecutively returns uncompressed contents of the Bgzip file
+    /// corresponding to each [Chunk](../index/struct.Chunk.html).
+    ///
+    /// `buffer` must have capacity at least `MAX_BLOCK_SIZE`.
     pub fn new(reader: &'a mut SeekReader<R>, chunks: Vec<Chunk>, buffer: &'a mut Vec<u8>) -> Self {
         // Does not change the capacity
         buffer.clear();
@@ -212,6 +228,9 @@ impl<'a, R: Read + Seek> ChunksReader<'a, R> {
         }
     }
 
+    /// Create a Reader that returns the uncompressed contents of the full Bgzip file.
+    ///
+    /// `buffer` must have capacity at least `MAX_BLOCK_SIZE`.
     pub fn without_boundaries(reader: &'a mut SeekReader<R>, buffer: &'a mut Vec<u8>) -> Self {
         let chunk = Chunk::new(VirtualOffset::from_raw(0), VirtualOffset::from_raw(std::u64::MAX));
         Self::new(reader, vec![chunk], buffer)
