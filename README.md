@@ -1,8 +1,8 @@
 # bam
 
 *bam* is a library that allows to read BAM files, written completely in Rust. Currently, it
-allows to only fetch reads from a region in an indexed bam file. In the future versions, non-indexed
-reader will be supported, as well as writing BAM files.
+allows to only fetch records from a region in an indexed bam file. In the future versions,
+non-indexed reader will be supported, as well as writing BAM files.
 
 ## Why?
 
@@ -12,9 +12,9 @@ Additionally, it removes the need to install additional C libraries.
 ## Usage
 
 Currently, there is only one available reader: `bam::IndexedReader`. The following code would
-print SAM entries for all reads in a region:
+print SAM entries for all records in a region:
 
-```
+```rust
 extern crate bam;
 
 fn main() {
@@ -34,7 +34,7 @@ fn main() {
 ```
 
 Additionally, you can use `read_into(&mut record)` to save time on record allocation:
-```
+```rust
     let mut viewer = reader.fetch(1, 100_000, 200_000);
     let mut record = bam::Record::new();
     loop {

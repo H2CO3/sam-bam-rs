@@ -1,7 +1,7 @@
 
 //! *bam* is a library that allows to read BAM files, written completely in Rust. Currently, it
-//! allows to only fetch reads from a region in an indexed bam file. In the future versions, non-indexed
-//! reader will be supported, as well as writing BAM files.
+//! allows to only fetch records from a region in an indexed bam file. In the future versions,
+//! non-indexed reader will be supported, as well as writing BAM files.
 //!
 //! ## Why?
 //!
@@ -11,7 +11,7 @@
 //! ## Usage
 //!
 //! Currently, there is only one available reader: `bam::IndexedReader`. The following code would
-//! print SAM entries for all reads in a region:
+//! print SAM entries for all records in a region:
 //!
 //! ```
 //! extern crate bam;
