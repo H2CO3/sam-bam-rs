@@ -180,6 +180,42 @@ impl Block {
     }
 }
 
+/// Builder of [bgzip file reader](struct.SeekReader.html)
+pub struct SeekReaderBuilder {
+    cache_capacity: usize,
+}
+
+impl SeekReaderBuilder {
+    /// Creates a new SeekReaderBuilder. The same as
+    /// [SeekReader::build](struct.SeekReader.html#method.build)
+    pub fn new() -> SeekReaderBuilder {
+        SeekReaderBuilder {
+            cache_capacity: 1000,
+        }
+    }
+
+    /// Sets new LRU cache capacity. The cache stores last accessed bgzip blocks, so the size of the
+    /// cache would be `cache_size * (MAX_BLOCK_SIZE = 64 KiB)`. Default cache capacity is 1000.
+    /// Cache capacity should not be zero.
+    pub fn cache_capacity(&mut self, cache_capacity: usize) -> &mut Self {
+        assert!(cache_capacity > 0, "Cache size must be non-zero");
+        self.cache_capacity = cache_capacity;
+        self
+    }
+
+    /// Opens a [SeekReader](struct.SeekReader.html) from the `path`.
+    pub fn from_path<P: AsRef<Path>>(&self, path: P) -> io::Result<SeekReader<File>> {
+        let stream = File::open(path)
+            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
+        Ok(self.from_stream(stream))
+    }
+
+    /// Opens a [SeekReader](struct.SeekReader.html) from stream. Stream must support random access.
+    pub fn from_stream<R: Read + Seek>(&self, stream: R) -> SeekReader<R> {
+        SeekReader::new(stream, self.cache_capacity)
+    }
+}
+
 /// BGzip file reader, which allows to open bgzip blocks given an offset.
 pub struct SeekReader<R: Read + Seek> {
     stream: R,
@@ -189,25 +225,23 @@ pub struct SeekReader<R: Read + Seek> {
 }
 
 impl SeekReader<File> {
-    /// Open the reader from the `path`.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let stream = File::open(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
-        SeekReader::from_stream(stream)
+    /// Creates [SeekReaderBuilder](struct.SeekReaderBuilder.html).
+    pub fn build() -> SeekReaderBuilder {
+        SeekReaderBuilder::new()
     }
 }
 
-const LRU_CAPACITY: usize = 1000;
-
 impl<R: Read + Seek> SeekReader<R> {
-    /// Open the reader from the `stream`. The stream should be open as long as the reader.
-    pub fn from_stream(stream: R) -> io::Result<Self> {
-        Ok(SeekReader {
+    /// Creates a new SeekReader from a stream and a cache capacity.
+    /// Consider using `SeekReader::build()` to create
+    /// [SeekReaderBuilder](struct.SeekReaderBuilder.html).
+    pub fn new(stream: R, cache_capacity: usize) -> Self {
+        Self {
             stream,
-            cache: LruCache::new(LRU_CAPACITY),
+            cache: LruCache::new(cache_capacity),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
             empty_blocks: Vec::new(),
-        })
+        }
     }
 
     /// Get a bgzip block using `offset` into the file.

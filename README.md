@@ -9,6 +9,8 @@ non-indexed reader will be supported, as well as writing BAM files.
 Having a library written completely in Rust reduces the number of dependencies and compilation time.
 Additionally, it removes the need to install additional C libraries.
 
+Errors produced by this crate are more readable and easier to catch and fix on-the-fly.
+
 ## Usage
 
 Currently, there is only one available reader: `bam::IndexedReader`. The following code would

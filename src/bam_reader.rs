@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, Result, Error, Write};
-use std::io::ErrorKind::InvalidData;
-use std::path::Path;
+use std::io::ErrorKind::{self, InvalidData};
+use std::path::{Path, PathBuf};
 use std::result;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -66,12 +66,12 @@ impl Header {
         Ok(res)
     }
 
-    /// Number of reference sequences in the bam file
+    /// Returns the number of reference sequences in the BAM file.
     pub fn n_references(&self) -> usize {
         self.references.len()
     }
 
-    /// Get the name of the reference with `ref_id` (0-based).
+    /// Returns the name of the reference with `ref_id` (0-based).
     /// Returns None if there is no such reference
     pub fn reference_name(&self, ref_id: usize) -> Option<&str> {
         if ref_id > self.references.len() {
@@ -81,7 +81,7 @@ impl Header {
         }
     }
 
-    /// Get the length of the reference with `ref_id` (0-based).
+    /// Returns the length of the reference with `ref_id` (0-based).
     /// Returns None if there is no such reference
     pub fn reference_len(&self, ref_id: usize) -> Option<i32> {
         if ref_id > self.lengths.len() {
@@ -91,7 +91,7 @@ impl Header {
         }
     }
 
-    /// Full header text, as in BAM file
+    /// Returns full header text, as in BAM file
     pub fn text(&self) -> &[u8] {
         &self.text
     }
@@ -109,7 +109,7 @@ pub struct RegionViewer<'a, R: Read + Seek> {
 }
 
 impl<'a, R: Read + Seek> RegionViewer<'a, R> {
-    /// Write the next record into `record`.
+    /// Writes the next record into `record`.
     ///
     /// # Errors
     ///
@@ -146,7 +146,7 @@ impl<'a, R: Read + Seek> RegionViewer<'a, R> {
     }
 }
 
-/// Iterate over records in the region. Consider using [read_into](#method.read_into), if only
+/// Iterates over records in the region. Consider using [read_into](#method.read_into), if only
 /// one record is needed at each time.
 ///
 /// # Errors
@@ -168,6 +168,101 @@ impl<'a, R: Read + Seek> Iterator for RegionViewer<'a, R> {
     }
 }
 
+/// [IndexedReader](struct.IndexedReader.html) builder. Allows to specify paths to BAM and BAI
+/// files, as well as LRU cache size and the option to skip BAI modification time check.
+pub struct IndexedReaderBuilder {
+    cache_capacity: Option<usize>,
+    bai_path: Option<PathBuf>,
+    check_time: bool,
+}
+
+impl IndexedReaderBuilder {
+    /// Creates a new indexed reader builder.
+    pub fn new() -> Self {
+        Self {
+            cache_capacity: None,
+            bai_path: None,
+            check_time: true,
+        }
+    }
+
+    /// Sets a path to a BAI index. By default, it is `{bam_path}.bai`.
+    /// Overwrites the last value, if any.
+    pub fn bai_path<P: AsRef<Path>>(&mut self, path: P) -> &mut Self {
+        self.bai_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Sets or unsets BAI modification time check (set by default).
+    ///
+    /// If on, the build will fail if the BAI index is younger than the BAM file.
+    pub fn check_time(&mut self, value: bool) -> &mut Self {
+        self.check_time = value;
+        self
+    }
+
+    /// Sets new LRU cache capacity. See
+    /// [cache_capacity](../bgzip/struct.SeekReaderBuilder.html#method.cache_capacity)
+    /// for more details.
+    pub fn cache_capacity(&mut self, cache_capacity: usize) -> &mut Self {
+        assert!(cache_capacity > 0, "Cache size must be non-zero");
+        self.cache_capacity = Some(cache_capacity);
+        self
+    }
+
+    /// Creates a new [IndexedReader](struct.IndexedReader.html) from `bam_path`.
+    /// If BAI path was not specified, the functions tries to open `{bam_path}.bai`.
+    pub fn from_path<P: AsRef<Path>>(&self, bam_path: P) -> Result<IndexedReader<File>> {
+        let bam_path = bam_path.as_ref();
+        let bai_path = self.bai_path.as_ref().map(PathBuf::clone)
+            .unwrap_or_else(|| PathBuf::from(format!("{}.bai", bam_path.display())));
+
+        if self.check_time {
+            let bam_modified = bam_path.metadata().and_then(|metadata| metadata.modified());
+            let bai_modified = bai_path.metadata().and_then(|metadata| metadata.modified());
+            match (bam_modified, bai_modified) {
+                (Ok(bam_time), Ok(bai_time)) => {
+                    if bai_time < bam_time {
+                        return Err(Error::new(ErrorKind::InvalidInput,
+                            format!("BAI file is younger than BAM file ({:?} < {:?})",
+                            bai_time, bam_time)));
+                    }
+                },
+                _ => {
+                    // Modification time not available, nothing we can do.
+                }
+            }
+        }
+
+        let mut reader_builder = SeekReader::build();
+        if let Some(cache_capacity) = self.cache_capacity {
+            reader_builder.cache_capacity(cache_capacity);
+        }
+        let reader = reader_builder.from_path(bam_path)
+            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAM file: {}", e)))?;
+
+        let index = Index::from_path(bai_path)
+            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAI index: {}", e)))?;
+        IndexedReader::new(reader, index)
+    }
+
+    /// Creates a new [IndexedReader](struct.IndexedReader.html) from two streams.
+    /// BAM stream should support random access, while BAI stream does not need to.
+    /// `check_time` and `bai_path` values are ignored.
+    pub fn from_streams<R: Seek + Read, T: Read>(&self, bam_stream: R, bai_stream: T)
+            -> Result<IndexedReader<R>> {
+        let mut reader_builder = SeekReader::build();
+        if let Some(cache_capacity) = self.cache_capacity {
+            reader_builder.cache_capacity(cache_capacity);
+        }
+        let reader = reader_builder.from_stream(bam_stream);
+
+        let index = Index::from_stream(bai_stream)
+            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAI index: {}", e)))?;
+        IndexedReader::new(reader, index)
+    }
+}
+
 /// BAM file reader. `IndexedReader` allows to fetch records from arbitrary positions,
 /// but does not allow to read all reads consecutively.
 pub struct IndexedReader<R: Read + Seek> {
@@ -178,32 +273,20 @@ pub struct IndexedReader<R: Read + Seek> {
 }
 
 impl IndexedReader<File> {
-    /// Open bam file from `path`. Bai index will be loaded from `{path}.bai`.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        IndexedReader::from_path_and_index(&path, format!("{}.bai", path.display()))
+    /// Creates [IndexedReaderBuilder](struct.IndexedReaderBuilder.html).
+    pub fn build() -> IndexedReaderBuilder {
+        IndexedReaderBuilder::new()
     }
 
-    /// Open bam file from `bam_path` and load bai index from `bai_path`.
-    pub fn from_path_and_index<P: AsRef<Path>, U: AsRef<Path>>(bam_path: P, bai_path: U)
-            -> Result<Self> {
-        let reader = SeekReader::from_path(bam_path)
-            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAM file: {}", e)))?;
-        let index = Index::from_path(bai_path)
-            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAI index: {}", e)))?;
-        IndexedReader::new(reader, index)
+    /// Opens bam file from `path`. Bai index will be loaded from `{path}.bai`.
+    ///
+    /// Same as `Self::build().from_path(path)`.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::build().from_path(path)
     }
 }
 
 impl<R: Read + Seek> IndexedReader<R> {
-    /// Open `IndexedReader` using two streams. `reader_stream` should be opened during the
-    /// whole work with the reader, while `index_stream` will be read once.
-    pub fn from_streams<T: Read>(reader_stream: R, index_stream: &mut T) -> Result<Self> {
-        let reader = SeekReader::from_stream(reader_stream)?;
-        let index = Index::from_stream(index_stream)?;
-        IndexedReader::new(reader, index)
-    }
-
     fn new(mut reader: SeekReader<R>, index: Index) -> Result<Self> {
         let mut buffer = Vec::with_capacity(bgzip::MAX_BLOCK_SIZE);
         let header = {
@@ -215,13 +298,13 @@ impl<R: Read + Seek> IndexedReader<R> {
         })
     }
 
-    /// Get an iterator over records aligned to the reference `ref_id` (0-based),
+    /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
     /// and intersecting half-open interval `[start-end)`.
     pub fn fetch<'a>(&'a mut self, ref_id: i32, start: i32, end: i32) -> RegionViewer<'a, R> {
         self.fetch_by(ref_id, start, end, |_| true)
     }
 
-    /// Get an iterator over records aligned to the reference `ref_id` (0-based),
+    /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
     /// and intersecting half-open interval `[start-end)`.
     ///
     /// Records will be filtered by `predicate`. It helps to slightly reduce fetching time,
@@ -239,13 +322,13 @@ impl<R: Read + Seek> IndexedReader<R> {
         }
     }
 
-    /// Return BAM header
+    /// Returns BAM header.
     pub fn header(&self) -> &Header {
         &self.header
     }
 
-    /// Write record in sam format.
-    /// Same as [Record::write_sam](../record/struct.Record.html#method.write_sam)
+    /// Writes record in sam format.
+    /// Same as [Record::write_sam](../record/struct.Record.html#method.write_sam).
     pub fn write_record_as_sam<W: Write>(&self, writer: &mut W, record: &record::Record)
             -> Result<()> {
         record.write_sam(writer, self.header())
