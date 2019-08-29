@@ -223,6 +223,7 @@ pub struct SeekReader<R: Read + Seek> {
     cache: LruCache<u64, Block>,
     reading_buffer: Vec<u8>,
     empty_blocks: Vec<Block>,
+    current_offset: u64,
 }
 
 impl SeekReader<File> {
@@ -242,6 +243,7 @@ impl<R: Read + Seek> SeekReader<R> {
             cache: LruCache::new(cache_capacity),
             reading_buffer: vec![0; MAX_BLOCK_SIZE],
             empty_blocks: Vec::new(),
+            current_offset: 0,
         }
     }
 
@@ -253,10 +255,14 @@ impl<R: Read + Seek> SeekReader<R> {
                 .expect("Cache should contain the requested block"));
         }
 
-        self.stream.seek(SeekFrom::Start(offset))?;
+        if self.current_offset != offset {
+            self.stream.seek(SeekFrom::Start(offset))?;
+            self.current_offset = offset;
+        }
         let mut new_block = self.empty_blocks.pop().unwrap_or_else(|| Block::new());
         new_block.fill(&mut self.stream, &mut self.reading_buffer)
             .map_err(|e| -> io::Error { e.into() })?;
+        self.current_offset += new_block.block_size() as u64;
 
         if let Some(mut old_block) = self.cache.insert(offset, new_block) {
             old_block.clear();
