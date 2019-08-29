@@ -150,7 +150,7 @@
 //!
 
 extern crate byteorder;
-extern crate libflate;
+extern crate inflate;
 extern crate lru_cache;
 #[cfg(feature = "check_crc")]
 extern crate crc;

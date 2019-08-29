@@ -473,6 +473,13 @@ impl Record {
         }
         self.replace_cigar_if_needed()?;
 
+        if self.is_mapped() == (self.ref_id == -1) {
+            return Err(Error::Corrupted("Record (flag & 0x4) and ref_id do not match"));
+        }
+        if (self.is_paired() && self.mate_is_mapped()) == (self.next_ref_id == -1) {
+            return Err(Error::Corrupted("Record (flag & 0x8) and next_ref_id do not match"));
+        }
+
         Ok(())
     }
 

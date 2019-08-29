@@ -1,11 +1,10 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::path::Path;
 use std::cmp::min;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use libflate::deflate;
 use lru_cache::LruCache;
 
 use super::index::{Chunk, VirtualOffset};
@@ -75,8 +74,6 @@ impl Block {
     pub fn fill<R: Read>(&mut self, stream: &mut R, reading_buffer: &mut Vec<u8>) 
             -> Result<(), BlockError> {
         assert!(reading_buffer.len() >= MAX_BLOCK_SIZE);
-        self.contents.clear();
-
         let extra_length = {
             let header = &mut reading_buffer[..12];
             match stream.read_exact(header) {
@@ -99,11 +96,15 @@ impl Block {
         };
 
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])?;
-        let mut decoder = deflate::Decoder::new(&reading_buffer[12 + extra_length..block_size - 8]);
-        let obs_contents_size = decoder.read_to_end(&mut self.contents)
+        let mut decoder = inflate::InflateWriter::new(&mut self.contents);
+        decoder.write(&reading_buffer[12 + extra_length..block_size - 8])
             .map_err(|e| BlockError::Corrupted(
                 format!("Could not decompress block contents: {}", e)))?;
-        
+        decoder.finish()
+            .map_err(|e| BlockError::Corrupted(
+                format!("Could not decompress block contents: {}", e)))?;
+        let obs_contents_size = self.contents.len();
+
         let _exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()?;
         let exp_contents_size = (&reading_buffer[block_size - 4..block_size])

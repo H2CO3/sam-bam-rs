@@ -147,5 +147,5 @@ bam = { version = "*", features = ["check_crc"] }
 ## Future versions
 * Support for `bam::Writer`,
 * Optimized writing of SAM records,
-* Support for multi-thread loading and writing,
+* Support multi-thread reading and writing,
 * Additional features for `bam::Record` and other structures, like `Cigar`.
