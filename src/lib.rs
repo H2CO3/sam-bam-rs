@@ -1,6 +1,6 @@
 //! *bam* is a crate that allows to read BAM files, written completely in Rust. Currently, it
-//! allows to read BAM files in *indexed* and *consecutive* modes (`bam::IndexedReader`
-//! and `bam::Reader`). The future versions will support writing BAM files.
+//! allows to read BAM files in *indexed* and *consecutive* modes ([bam::IndexedReader](bam_reader/struct.IndexedReader.html)
+//! and [bam::Reader](bam_reader/struct.Reader.html)). The future versions will support writing BAM files.
 //!
 //! ## Why?
 //!
@@ -12,8 +12,9 @@
 //! ## Usage
 //!
 //! Currently, there are two readers:
-//! * `bam::IndexedReader`, which allows to fetch records from random genomic regions,
-//! * `bam::Reader`, which allows to read the BAM file consecutively.
+//! * [bam::IndexedReader](bam_reader/struct.IndexedReader.html), which allows to fetch records from
+//! random genomic regions,
+//! * [bam::Reader](bam_reader/struct.Reader.html), which allows to read the BAM file consecutively.
 //!
 //! ### IndexedReader
 //!
@@ -68,14 +69,17 @@
 //!
 //! If only records with specific MAPQ or FLAGs are needed, you can use `fetch_by`. For example,
 //! ```rust
-//! reader.fetch_by(1, 100_000, 200_000, |record| record.mapq() >= 30 && !record.is_secondary())
+//! reader.fetch_by(1, 100_000, 200_000,
+//!     |record| record.mapq() >= 30 && !record.is_secondary())
 //! ```
 //! to load only records with MAPQ at least 30 and skip all secondary alignments. In some cases it
 //! helps to save time by not calculating the right-most aligned read position, as well as
 //! remove additional allocations.
 //!
-//! You can also use `IndexedReaderBuilder`, which gives more control over loading `IndexedReader`. For
-//! example you can create a reader using a different BAI path, and a different cache capacity:
+//! You can also use [IndexedReaderBuilder](bam_reader/struct.IndexedReaderBuilder.html),
+//! which gives more control over loading
+//! [IndexedReader](bam_reader/struct.IndexedReader.html).
+//! For example you can create a reader using a different BAI path, and a different cache capacity:
 //! ```rust
 //! let mut reader = bam::IndexedReader::build()
 //!     .bai_path("other_dir/test.bai")
@@ -85,8 +89,10 @@
 //!
 //! ### Reader
 //!
-//! `Reader` allows to read all records from the BAM file consecutively. `Reader` itself is an iterator
-//! and implements the same trait `BamReader`, which allows to load records similarly:
+//! [Reader](bam_reader/struct.Reader.html) allows to read all records from the BAM file
+//! consecutively. [Reader](bam_reader/struct.Reader.html) itself is an iterator
+//! and implements the same trait [BamReader](bam_reader/trait.BamReader.html), which allows
+//! to load records similarly:
 //! ```rust
 //! extern crate bam;
 //!
@@ -139,14 +145,17 @@
 //! ```
 //!
 //! ## Changelog
-//! * 0.0.2 - Support for consecutive reader `bam::Reader`, and a `bam::BamReader` trait.
-//! * 0.0.1 - Support for indexed reader `bam::IndexedReader`.
+//! * 0.0.3 - Switched to a new `inflate` crate, additional reading speedup,
+//! * 0.0.2 - Support for consecutive reader [bam::Reader](bam_reader/struct.Reader.html),
+//! and a [bam::BamReader](bam_reader/trait.BamReader.html) trait.
+//! * 0.0.1 - Support for indexed reader [bam::IndexedReader](bam_reader/struct.IndexedReader.html).
 //!
 //! ## Future versions
 //! * Support for `bam::Writer`,
 //! * Optimized writing of SAM records,
 //! * Support for multi-thread loading and writing,
-//! * Additional features for `bam::Record` and other structures, like `Cigar`.
+//! * Additional features for [bam::Record](record/struct.Record.html)
+//! and other structures, like [Cigar](cigar/struct.Cigar.html).
 //!
 
 extern crate byteorder;

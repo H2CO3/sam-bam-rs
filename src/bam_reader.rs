@@ -293,6 +293,28 @@ impl IndexedReaderBuilder {
 /// BAM file reader. In contrast to [Reader](struct.Reader.html) the `IndexedReader`
 /// allows to fetch records from arbitrary positions,
 /// but does not allow to read all records consecutively.
+///
+/// The following code would load BAM file `test.bam` and its index `test.bam.bai`, take all records
+/// from `2:100001-200000` and print them on the stdout.
+///
+/// ```rust
+/// extern crate bam;
+///
+/// fn main() {
+///     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
+///
+///     // We need to clone the header to have access to reference names as the
+///     // reader will be blocked during fetch.
+///     let header = reader.header().clone();
+///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///
+///     for record in reader.fetch(1, 100_000, 200_000) {
+///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
+///     }
+/// }
+/// ```
+///
+/// You can find more detailed help on the [main page](../index.html#indexedreader).
 pub struct IndexedReader<R: Read + Seek> {
     reader: bgzip::SeekReader<R>,
     header: Header,
@@ -368,6 +390,23 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// allows to read all records consecutively, but does not allow random access.
 ///
 /// Implements [BamReader](struct.BamReader.html) trait.
+///
+/// ```rust
+/// extern crate bam;
+///
+/// fn main() {
+///     let reader = bam::Reader::from_path("test.bam").unwrap();
+///
+///     let header = reader.header().clone();
+///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///
+///     for record in reader {
+///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
+///     }
+/// }
+/// ```
+///
+/// You can find more detailed help on the [main page](../index.html#reader).
 pub struct Reader<R: Read> {
     bgzip_reader: bgzip::ConsecutiveReader<R>,
     header: Header,
