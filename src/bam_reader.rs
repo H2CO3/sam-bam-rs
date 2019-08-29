@@ -252,8 +252,7 @@ impl IndexedReaderBuilder {
                 (Ok(bam_time), Ok(bai_time)) => {
                     if bai_time < bam_time {
                         return Err(Error::new(ErrorKind::InvalidInput,
-                            format!("BAI file is younger than BAM file ({:?} < {:?})",
-                            bai_time, bam_time)));
+                            "BAI file is younger than BAM file"));
                     }
                 },
                 _ => {

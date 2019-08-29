@@ -7,7 +7,7 @@ description = "Library that allows to read BAM files, written completely in Rust
 repository = "https://gitlab.com/tprodanov/bam"
 readme = "README.md"
 license = "MIT"
-keywords = ["bam", "htslib", "backend", "bio", "bgzip"]
+keywords = ["bam", "htslib", "backend", "bio", "bgzip", "bgzf"]
 documentation = "https://docs.rs/bam"
 
 [profile.test]

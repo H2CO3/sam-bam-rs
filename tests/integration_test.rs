@@ -8,6 +8,7 @@ use std::cmp::min;
 use std::time::Instant;
 
 use rand::Rng;
+use bam::BamReader;
 
 fn print_records(records1: &Vec<&str>, records2: &Vec<&str>) {
     println!("Records 1:");
