@@ -10,12 +10,12 @@ use std::time::Instant;
 use rand::Rng;
 
 fn print_records(records1: &Vec<&str>, records2: &Vec<&str>) {
-    println!("Reads 1:");
+    println!("Records 1:");
     for record in records1.iter() {
         println!("    {}", &record[..min(record.len(), 20)]);
     }
 
-    println!("Reads 2:");
+    println!("Records 2:");
     for record in records2.iter() {
         println!("    {}", &record[..min(record.len(), 20)]);
     }

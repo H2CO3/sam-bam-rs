@@ -238,7 +238,7 @@ impl Display for Index {
             writeln!(f, "Reference {}:", i)?;
             reference.fmt(f)?;
         }
-        write!(f, "Unmapped reads: ")?;
+        write!(f, "Unmapped records: ")?;
         match self.n_unmapped {
             Some(count) => writeln!(f, "{}", count),
             None => writeln!(f, "Unknown")

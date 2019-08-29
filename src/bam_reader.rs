@@ -121,12 +121,12 @@ impl Header {
 ///    // Do somethind with the record
 ///}
 ///```
-pub trait BamReader {
+pub trait BamReader: Iterator<Item = result::Result<record::Record, record::Error>> {
     /// Writes the next record into `record`. It allows to skip excessive memory allocation.
     ///
     /// # Errors
     ///
-    /// If there are no more reads to iterate over, the function returns
+    /// If there are no more records to iterate over, the function returns
     /// [NoMoreRecords](../record/enum.Error.html#variant.NoMoreRecords) error.
     ///
     /// If the record was corrupted, the function returns
@@ -134,27 +134,6 @@ pub trait BamReader {
     /// If the record was truncated or the reading failed for a different reason, the function
     /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error>;
-}
-
-/// Iterator over records.
-///
-/// # Errors
-///
-/// If the record was corrupted, the function returns
-/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
-/// If the record was truncated or the reading failed for a different reason, the function
-/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
-impl Iterator for BamReader {
-    type Item = result::Result<record::Record, record::Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut record = record::Record::new();
-        match self.read_into(&mut record) {
-            Ok(()) => Some(Ok(record)),
-            Err(record::Error::NoMoreRecords) => None,
-            Err(e) => Some(Err(e)),
-        }
-    }
 }
 
 /// Iterator over records in a specific region. Implements [BamReader](trait.BamReader.html) trait.
@@ -192,6 +171,27 @@ impl<'a, R: Read + Seek> BamReader for RegionViewer<'a, R> {
             if record_end > self.start {
                 return Ok(());
             }
+        }
+    }
+}
+
+/// Iterator over records.
+///
+/// # Errors
+///
+/// If the record was corrupted, the function returns
+/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+/// If the record was truncated or the reading failed for a different reason, the function
+/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+impl<'a, R: Seek + Read> Iterator for RegionViewer<'a, R> {
+    type Item = result::Result<record::Record, record::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut record = record::Record::new();
+        match self.read_into(&mut record) {
+            Ok(()) => Some(Ok(record)),
+            Err(record::Error::NoMoreRecords) => None,
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -293,7 +293,7 @@ impl IndexedReaderBuilder {
 
 /// BAM file reader. In contrast to [Reader](struct.Reader.html) the `IndexedReader`
 /// allows to fetch records from arbitrary positions,
-/// but does not allow to read all reads consecutively.
+/// but does not allow to read all records consecutively.
 pub struct IndexedReader<R: Read + Seek> {
     reader: bgzip::SeekReader<R>,
     header: Header,
@@ -366,7 +366,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 }
 
 /// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `Reader`
-/// allows to read all reads consecutively, but does not allow random access.
+/// allows to read all records consecutively, but does not allow random access.
 ///
 /// Implements [BamReader](struct.BamReader.html) trait.
 pub struct Reader<R: Read> {
@@ -404,5 +404,26 @@ impl<R: Read> Reader<R> {
 impl<R: Read> BamReader for Reader<R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         record.fill_from(&mut self.bgzip_reader)
+    }
+}
+
+/// Iterator over records.
+///
+/// # Errors
+///
+/// If the record was corrupted, the function returns
+/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+/// If the record was truncated or the reading failed for a different reason, the function
+/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+impl<R: Read> Iterator for Reader<R> {
+    type Item = result::Result<record::Record, record::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut record = record::Record::new();
+        match self.read_into(&mut record) {
+            Ok(()) => Some(Ok(record)),
+            Err(record::Error::NoMoreRecords) => None,
+            Err(e) => Some(Err(e)),
+        }
     }
 }
