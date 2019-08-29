@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use super::index::{self, Index};
 use super::record;
-use super::bgzip::{self, SeekReader, ChunksReader};
+use super::bgzip;
 
 /// BAM file header. Contains names and lengths of reference sequences.
 #[derive(Clone)]
@@ -97,19 +97,32 @@ impl Header {
     }
 }
 
-/// Iterator over records in a specific region.
+/// Iterator over bam records.
 ///
-/// If possible, create a single record using [Record::new](../record/struct.Record.html#method.new)
-/// and then use [read_into](#method.read_into) instead of iterating, as it saves time on allocation.
-pub struct RegionViewer<'a, R: Read + Seek> {
-    chunks_reader: ChunksReader<'a, R>,
-    start: i32,
-    end: i32,
-    predicate: Box<Fn(&record::Record) -> bool>,
-}
-
-impl<'a, R: Read + Seek> RegionViewer<'a, R> {
-    /// Writes the next record into `record`.
+/// You can use the single record:
+/// ```rust
+///let mut record = bam::Record::new();
+///loop {
+///    // reader: impl BamReader
+///    match reader.read_into(&mut record) {
+///    // New record is saved into record
+///        Ok(()) => {},
+///        // NoMoreRecords represents stop iteration
+///        Err(bam::Error::NoMoreRecords) => break,
+///        Err(e) => panic!("{}", e),
+///    }
+///    // Do somethind with the record
+///}
+///```
+/// Or you can just iterate over records:
+/// ```rust
+///for record in reader {
+///    let record = record.unwrap();
+///    // Do somethind with the record
+///}
+///```
+pub trait BamReader {
+    /// Writes the next record into `record`. It allows to skip excessive memory allocation.
     ///
     /// # Errors
     ///
@@ -120,7 +133,44 @@ impl<'a, R: Read + Seek> RegionViewer<'a, R> {
     /// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
     /// If the record was truncated or the reading failed for a different reason, the function
     /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
-    pub fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
+    fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error>;
+}
+
+/// Iterator over records.
+///
+/// # Errors
+///
+/// If the record was corrupted, the function returns
+/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+/// If the record was truncated or the reading failed for a different reason, the function
+/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+impl Iterator for BamReader {
+    type Item = result::Result<record::Record, record::Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut record = record::Record::new();
+        match self.read_into(&mut record) {
+            Ok(()) => Some(Ok(record)),
+            Err(record::Error::NoMoreRecords) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+/// Iterator over records in a specific region. Implements [BamReader](trait.BamReader.html) trait.
+///
+/// If possible, create a single record using [Record::new](../record/struct.Record.html#method.new)
+/// and then use [read_into](trait.BamReader.html#method.read_into) instead of iterating,
+/// as it saves time on allocation.
+pub struct RegionViewer<'a, R: Read + Seek> {
+    chunks_reader: bgzip::ChunksReader<'a, R>,
+    start: i32,
+    end: i32,
+    predicate: Box<Fn(&record::Record) -> bool>,
+}
+
+impl<'a, R: Read + Seek> BamReader for RegionViewer<'a, R> {
+    fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
             record.fill_from(&mut self.chunks_reader)?;
             if !record.is_mapped() || !(self.predicate)(&record) || record.start() >= self.end {
@@ -142,28 +192,6 @@ impl<'a, R: Read + Seek> RegionViewer<'a, R> {
             if record_end > self.start {
                 return Ok(());
             }
-        }
-    }
-}
-
-/// Iterates over records in the region. Consider using [read_into](#method.read_into), if only
-/// one record is needed at each time.
-///
-/// # Errors
-///
-/// If the record was corrupted, the function returns
-/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
-/// If the record was truncated or the reading failed for a different reason, the function
-/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
-impl<'a, R: Read + Seek> Iterator for RegionViewer<'a, R> {
-    type Item = result::Result<record::Record, record::Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut record = record::Record::new();
-        match self.read_into(&mut record) {
-            Ok(()) => Some(Ok(record)),
-            Err(record::Error::NoMoreRecords) => None,
-            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -234,7 +262,7 @@ impl IndexedReaderBuilder {
             }
         }
 
-        let mut reader_builder = SeekReader::build();
+        let mut reader_builder = bgzip::SeekReader::build();
         if let Some(cache_capacity) = self.cache_capacity {
             reader_builder.cache_capacity(cache_capacity);
         }
@@ -251,7 +279,7 @@ impl IndexedReaderBuilder {
     /// `check_time` and `bai_path` values are ignored.
     pub fn from_streams<R: Seek + Read, T: Read>(&self, bam_stream: R, bai_stream: T)
             -> Result<IndexedReader<R>> {
-        let mut reader_builder = SeekReader::build();
+        let mut reader_builder = bgzip::SeekReader::build();
         if let Some(cache_capacity) = self.cache_capacity {
             reader_builder.cache_capacity(cache_capacity);
         }
@@ -263,10 +291,11 @@ impl IndexedReaderBuilder {
     }
 }
 
-/// BAM file reader. `IndexedReader` allows to fetch records from arbitrary positions,
+/// BAM file reader. In contrast to [Reader](struct.Reader.html) the `IndexedReader`
+/// allows to fetch records from arbitrary positions,
 /// but does not allow to read all reads consecutively.
 pub struct IndexedReader<R: Read + Seek> {
-    reader: SeekReader<R>,
+    reader: bgzip::SeekReader<R>,
     header: Header,
     index: Index,
     buffer: Vec<u8>,
@@ -287,10 +316,11 @@ impl IndexedReader<File> {
 }
 
 impl<R: Read + Seek> IndexedReader<R> {
-    fn new(mut reader: SeekReader<R>, index: Index) -> Result<Self> {
+    fn new(mut reader: bgzip::SeekReader<R>, index: Index) -> Result<Self> {
         let mut buffer = Vec::with_capacity(bgzip::MAX_BLOCK_SIZE);
         let header = {
-            let mut header_reader = ChunksReader::without_boundaries(&mut reader, &mut buffer);
+            let mut header_reader = bgzip::ChunksReader::without_boundaries(
+                &mut reader, &mut buffer);
             Header::from_stream(&mut header_reader)?
         };
         Ok(Self {
@@ -316,7 +346,7 @@ impl<R: Read + Seek> IndexedReader<R> {
     {
         let chunks = self.index.fetch_chunks(ref_id, start, end);
         RegionViewer {
-            chunks_reader: ChunksReader::new(&mut self.reader, chunks, &mut self.buffer),
+            chunks_reader: bgzip::ChunksReader::new(&mut self.reader, chunks, &mut self.buffer),
             start, end,
             predicate: Box::new(predicate),
         }
@@ -332,5 +362,47 @@ impl<R: Read + Seek> IndexedReader<R> {
     pub fn write_record_as_sam<W: Write>(&self, writer: &mut W, record: &record::Record)
             -> Result<()> {
         record.write_sam(writer, self.header())
+    }
+}
+
+/// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `Reader`
+/// allows to read all reads consecutively, but does not allow random access.
+///
+/// Implements [BamReader](struct.BamReader.html) trait.
+pub struct Reader<R: Read> {
+    bgzip_reader: bgzip::ConsecutiveReader<R>,
+    header: Header,
+}
+
+impl Reader<File> {
+    /// Creates BAM file reader from `path`.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let stream = File::open(path)
+            .map_err(|e| Error::new(e.kind(), format!("Failed to open BAM file: {}", e)))?;
+        Self::from_stream(stream)
+    }
+}
+
+impl<R: Read> Reader<R> {
+    /// Creates BAM file reader from `stream`. The stream does not have to support random access.
+    pub fn from_stream(stream: R) -> Result<Self> {
+        let mut bgzip_reader = bgzip::ConsecutiveReader::from_stream(stream)?;
+        let header = Header::from_stream(&mut bgzip_reader)?;
+        Ok(Self {
+            bgzip_reader, header,
+        })
+    }
+}
+
+impl<R: Read> Reader<R> {
+    /// Returns BAM header.
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+}
+
+impl<R: Read> BamReader for Reader<R> {
+    fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
+        record.fill_from(&mut self.bgzip_reader)
     }
 }

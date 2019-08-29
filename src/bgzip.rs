@@ -206,7 +206,7 @@ impl SeekReaderBuilder {
     /// Opens a [SeekReader](struct.SeekReader.html) from the `path`.
     pub fn from_path<P: AsRef<Path>>(&self, path: P) -> io::Result<SeekReader<File>> {
         let stream = File::open(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
+            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader: {}", e)))?;
         Ok(self.from_stream(stream))
     }
 
@@ -393,7 +393,7 @@ impl ConsecutiveReader<File> {
     /// Open the reader from the `path`.
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let stream = File::open(path)
-            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader ({})", e)))?;
+            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip reader: {}", e)))?;
         ConsecutiveReader::from_stream(stream)
     }
 }

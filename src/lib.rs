@@ -70,5 +70,10 @@ pub mod cigar;
 pub mod record;
 pub mod bam_reader;
 
-pub use bam_reader::{Header, IndexedReader};
-pub use record::{Record, Error};
+pub use bam_reader::Header;
+pub use bam_reader::IndexedReader;
+pub use bam_reader::Reader;
+pub use bam_reader::BamReader;
+
+pub use record::Record;
+pub use record::Error;
