@@ -152,7 +152,14 @@ impl<'a, R: Read + Seek> BamReader for RegionViewer<'a, R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
             record.fill_from(&mut self.chunks_reader)?;
-            if !record.is_mapped() || !(self.predicate)(&record) || record.start() >= self.end {
+            if !record.is_mapped() {
+                continue;
+            }
+            // Reads are sorted, so no more reads would be in the region.
+            if record.start() >= self.end {
+                return Err(record::Error::NoMoreRecords);
+            }
+            if !(self.predicate)(&record) {
                 continue;
             }
             if record.bin() > index::MAX_BIN {
