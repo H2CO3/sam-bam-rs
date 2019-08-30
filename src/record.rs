@@ -3,7 +3,7 @@ use std::io::ErrorKind::InvalidData;
 use std::fmt::{self, Display, Debug, Formatter};
 use std::cell::RefCell;
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::cigar::{self, Cigar};
 use super::bam_reader::Header;
@@ -247,6 +247,14 @@ impl Sequence {
         };
         b"NACNGNNNTNNNNNNN"[nt as usize]
     }
+
+    /// Writes in human readable format. Writes `*` if empty.
+    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        if self.len == 0 {
+            return f.write_u8(b'*');
+        }
+        write_iterator(f, (0..self.len).map(|i| self.at(i)))
+    }
 }
 
 impl Display for Sequence {
@@ -281,9 +289,17 @@ impl Qualities {
         Ok(())
     }
 
-    /// Return vector with +33 added, O(n).
+    /// Returns vector with +33 added, O(n).
     pub fn to_readable(&self) -> Vec<u8> {
         self.0.iter().map(|qual| qual + 33).collect()
+    }
+
+    /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
+    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        if self.0.is_empty() || self.0[0] == 0xff {
+            return f.write_u8(b'*');
+        }
+        write_iterator(f, self.0.iter().map(|qual| qual + 33))
     }
 }
 
@@ -359,6 +375,25 @@ pub(crate) unsafe fn resize<T>(v: &mut Vec<T>, new_len: usize) {
         v.reserve(new_len - v.len());
     }
     v.set_len(new_len);
+}
+
+pub(crate) fn write_iterator<W, I>(writer: &mut W, mut iterator: I) -> io::Result<()>
+where W: Write,
+      I: Iterator<Item = u8>,
+{
+    const SIZE: usize = 1024;
+    let mut buffer = [0_u8; SIZE];
+    loop {
+        for i in 0..SIZE {
+            match iterator.next() {
+                Some(value) => buffer[i] = value,
+                None => {
+                    return writer.write_all(&buffer[..i]);
+                }
+            }
+        }
+        writer.write_all(&buffer)?;
+    }
 }
 
 /// BAM Record
@@ -642,31 +677,32 @@ impl Record {
     /// [header](../bam_reader/struct.Header.html), as the record itself does not store reference
     /// names.
     pub fn write_sam<W: Write>(&self, f: &mut W, header: &Header) -> io::Result<()> {
-        let name = unsafe {
-            std::str::from_utf8_unchecked(&self.name)
-        };
-        write!(f, "{}\t{}\t", name, self.flag)?;
+        f.write_all(&self.name)?;
+        write!(f, "\t{}\t", self.flag)?;
         if self.ref_id < 0 {
-            write!(f, "*\t")?;
+            f.write_all(b"*\t")?;
         } else {
             write!(f, "{}\t", header.reference_name(self.ref_id as usize)
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }
         write!(f, "{}\t{}\t", self.start + 1, self.mapq)?;
-        write!(f, "{}\t", self.cigar)?;
+        self.cigar.write_readable(f)?;
 
         if self.next_ref_id < 0 {
-            write!(f, "*\t")?;
+            f.write_all(b"\t*\t")?;
         } else if self.next_ref_id == self.ref_id {
-            write!(f, "=\t")?;
+            f.write_all(b"\t=\t")?;
         } else {
-            write!(f, "{}\t", header.reference_name(self.next_ref_id as usize)
+            write!(f, "\t{}\t", header.reference_name(self.next_ref_id as usize)
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }
         write!(f, "{}\t{}\t", self.next_start + 1, self.template_len)?;
-        write!(f, "{}\t{}", self.seq, self.qual)?;
+        self.seq.write_readable(f)?;
+        f.write_u8(b'\t')?;
+        self.qual.write_readable(f)?;
+
         for tag in self.tags.iter() {
             write!(f, "\t{}", tag)?;
         }

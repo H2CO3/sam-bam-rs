@@ -1,7 +1,7 @@
-use std::io;
+use std::io::{self, Write};
 use std::fmt::{self, Display, Formatter};
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 /// Cigar operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +147,18 @@ impl Cigar {
     /// Shrink inner vector
     pub fn shrink_to_fit(&mut self) {
         self.0.shrink_to_fit();
+    }
+
+    /// Writes to `f` in a human readable format. Write `*` if empty.
+    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        if self.len() == 0 {
+            return f.write_u8(b'*');
+        }
+        for (len, op) in self.iter() {
+            write!(f, "{}", len)?;
+            f.write_u8(op.to_byte())?;
+        }
+        Ok(())
     }
 }
 
