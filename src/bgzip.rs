@@ -96,6 +96,7 @@ impl Block {
         };
 
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])?;
+        self.contents.clear();
         let mut decoder = inflate::InflateWriter::new(&mut self.contents);
         decoder.write(&reading_buffer[12 + extra_length..block_size - 8])
             .map_err(|e| BlockError::Corrupted(
