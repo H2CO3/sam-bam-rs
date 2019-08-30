@@ -1,6 +1,7 @@
 use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::InvalidData;
 use std::fmt::{self, Display, Debug, Formatter};
+use std::cell::RefCell;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -365,7 +366,7 @@ pub struct Record {
     ref_id: i32,
     next_ref_id: i32,
     start: i32,
-    end: Option<i32>,
+    end: RefCell<i32>,
     next_start: i32,
     bin: u16,
     mapq: u8,
@@ -387,7 +388,7 @@ impl Record {
             ref_id: -1,
             next_ref_id: -1,
             start: -1,
-            end: None,
+            end: RefCell::new(-1),
             next_start: -1,
             bin: 0,
             mapq: 0,
@@ -427,7 +428,7 @@ impl Record {
         if self.start < -1 {
             return Err(Error::Corrupted("Start < -1"));
         }
-        self.end = None;
+        *self.end.get_mut() = -1;
         let name_len = stream.read_u8()?;
         if name_len == 0 {
             return Err(Error::Corrupted("Name length == 0"));
@@ -494,7 +495,7 @@ impl Record {
             if op != cigar::Operation::Skip {
                 return Err(Error::Corrupted("Record contains invalid Cigar"));
             }
-            self.end = Some(len as i32);
+            *self.end.get_mut() = self.start + len as i32;
 
             let cigar_arr = match self.remove_tag(b"CG") {
                 Some(TagValue::IntArray(arr, _)) => arr,
@@ -557,16 +558,19 @@ impl Record {
     /// If the read was fetched from a specific region, it should have `end` already calculated.
     ///
     /// Returns -1 for unmapped records.
-    pub fn calculate_end(&mut self) -> i32 {
+    pub fn calculate_end(&self) -> i32 {
         if self.cigar.len() == 0 {
-            -1
-        } else if let Some(end) = self.end {
-            end
-        } else {
-            let end = self.start + self.cigar.calculate_aligned_len() as i32;
-            self.end = Some(end);
-            end
+            return -1;
         }
+
+        let end = *self.end.borrow();
+        if end != -1 {
+            return end;
+        }
+
+        let end = self.start + self.cigar.calculate_aligned_len() as i32;
+        *self.end.borrow_mut() = end;
+        end
     }
 
     /// Returns BAI bin.
