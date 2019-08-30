@@ -1,6 +1,6 @@
 [package]
 name = "bam"
-version = "0.0.3"
+version = "0.0.4"
 authors = ["Timofey Prodanov <timofey.prodanov@gmail.com>"]
 edition = "2018"
 description = "Library that allows to read BAM files, written completely in Rust."

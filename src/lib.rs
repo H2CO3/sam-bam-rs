@@ -144,19 +144,6 @@
 //! bam = { version = "*", features = ["check_crc"] }
 //! ```
 //!
-//! ## Changelog
-//! * 0.0.3 - Switched to a new `inflate` crate, additional reading speedup,
-//! * 0.0.2 - Support for consecutive reader [bam::Reader](bam_reader/struct.Reader.html),
-//! and a [bam::BamReader](bam_reader/trait.BamReader.html) trait.
-//! * 0.0.1 - Support for indexed reader [bam::IndexedReader](bam_reader/struct.IndexedReader.html).
-//!
-//! ## Future versions
-//! * Support for `bam::Writer`,
-//! * Optimized writing of SAM records,
-//! * Support for multi-thread loading and writing,
-//! * Additional features for [bam::Record](record/struct.Record.html)
-//! and other structures, like [Cigar](cigar/struct.Cigar.html).
-//!
 
 extern crate byteorder;
 extern crate inflate;
