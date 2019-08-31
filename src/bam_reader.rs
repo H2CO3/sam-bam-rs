@@ -203,12 +203,53 @@ impl<'a, R: Seek + Read> Iterator for RegionViewer<'a, R> {
     }
 }
 
+/// Defines how to react to a BAI index being younger than BAM file.
+///
+/// # Variants
+/// * `Error` - [IndexedReader](struct.IndexedReader.html) will not be constructed if the BAI
+/// index is was modified earlier than the BAM file. `io::Error` will be raised.
+/// * `Ignore` - does nothing if the index is younger than the BAM file.
+/// * `Warn` - calls a function `Fn(&str)` and continues constructing
+/// [IndexedReader](struct.IndexedReader.html);
+pub enum ModificationTime {
+    Error,
+    Ignore,
+    Warn(Box<Fn(&str)>),
+}
+
+impl ModificationTime {
+    fn check<T: AsRef<Path>, U: AsRef<Path>>(&self, bam_path: T, bai_path: U) -> Result<()> {
+        let bam_modified = bam_path.as_ref().metadata().and_then(|metadata| metadata.modified());
+        let bai_modified = bai_path.as_ref().metadata().and_then(|metadata| metadata.modified());
+        let bai_younger = match (bam_modified, bai_modified) {
+            (Ok(bam_time), Ok(bai_time)) => bai_time < bam_time,
+            _ => false, // Modification time not available.
+        };
+        if !bai_younger {
+            return Ok(());
+        }
+
+        match &self {
+            ModificationTime::Ignore => {},
+            ModificationTime::Error => return Err(Error::new(ErrorKind::InvalidInput,
+                "BAI file is younger than BAM file")),
+            ModificationTime::Warn(box_fun) => box_fun("BAI file is younger than BAM file"),
+        }
+        Ok(())
+    }
+
+    /// Create a warning strategy `ModificationTime::Warn`.
+    pub fn warn<F: Fn(&str) + 'static>(warning: F) -> Self {
+        ModificationTime::Warn(Box::new(warning))
+    }
+}
+
 /// [IndexedReader](struct.IndexedReader.html) builder. Allows to specify paths to BAM and BAI
-/// files, as well as LRU cache size and the option to skip BAI modification time check.
+/// files, as well as LRU cache size and an option to ignore or warn BAI modification time check.
 pub struct IndexedReaderBuilder {
     cache_capacity: Option<usize>,
     bai_path: Option<PathBuf>,
-    check_time: bool,
+    modification_time: ModificationTime,
 }
 
 impl IndexedReaderBuilder {
@@ -217,7 +258,7 @@ impl IndexedReaderBuilder {
         Self {
             cache_capacity: None,
             bai_path: None,
-            check_time: true,
+            modification_time: ModificationTime::Error,
         }
     }
 
@@ -228,11 +269,15 @@ impl IndexedReaderBuilder {
         self
     }
 
-    /// Sets or unsets BAI modification time check (set by default).
-    ///
-    /// If on, the build will fail if the BAI index is younger than the BAM file.
-    pub fn check_time(&mut self, value: bool) -> &mut Self {
-        self.check_time = value;
+    /// By default, [IndexedReader::new](struct.IndexedReader.html#method.new) and
+    /// [IndexedReaderBuilder::from_path](struct.IndexedReaderBuilder.html#method.from_path)
+    /// return an `io::Error` if the modification time of the BAI index is earlier
+    /// than the modification time of the BAM file.
+    /// 
+    /// Enum [ModificationTime](enum.ModificationTime.html) contains options to skip
+    /// this check or raise a warning instead of returning an error.
+    pub fn modification_time(&mut self, modification_time: ModificationTime) -> &mut Self {
+        self.modification_time = modification_time;
         self
     }
 
@@ -251,22 +296,7 @@ impl IndexedReaderBuilder {
         let bam_path = bam_path.as_ref();
         let bai_path = self.bai_path.as_ref().map(PathBuf::clone)
             .unwrap_or_else(|| PathBuf::from(format!("{}.bai", bam_path.display())));
-
-        if self.check_time {
-            let bam_modified = bam_path.metadata().and_then(|metadata| metadata.modified());
-            let bai_modified = bai_path.metadata().and_then(|metadata| metadata.modified());
-            match (bam_modified, bai_modified) {
-                (Ok(bam_time), Ok(bai_time)) => {
-                    if bai_time < bam_time {
-                        return Err(Error::new(ErrorKind::InvalidInput,
-                            "BAI file is younger than BAM file"));
-                    }
-                },
-                _ => {
-                    // Modification time not available, nothing we can do.
-                }
-            }
-        }
+        self.modification_time.check(&bam_path, &bai_path)?;
 
         let mut reader_builder = bgzip::SeekReader::build();
         if let Some(cache_capacity) = self.cache_capacity {
