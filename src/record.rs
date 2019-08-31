@@ -173,19 +173,22 @@ impl Display for Tag {
     }
 }
 
+/// Wrapper around raw tags
+pub struct TagViewer(pub Vec<u8>);
+
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
 ///
 /// Using `Display` on an empty sequence produces `*`.
 pub struct Sequence {
-    data: Vec<u8>,
+    raw: Vec<u8>,
     len: usize,
 }
 
 impl Sequence {
     fn new() -> Self {
         Sequence {
-            data: Vec::new(),
+            raw: Vec::new(),
             len: 0,
         }
     }
@@ -193,16 +196,16 @@ impl Sequence {
     fn fill_from<R: Read>(&mut self, stream: &mut R, expanded_len: usize) -> io::Result<()> {
         let short_len = (expanded_len + 1) / 2;
         unsafe {
-            resize(&mut self.data, short_len);
+            resize(&mut self.raw, short_len);
         }
-        stream.read_exact(&mut self.data)?;
+        stream.read_exact(&mut self.raw)?;
         self.len = expanded_len;
         Ok(())
     }
 
     /// Returns raw data.
     pub fn raw(&self) -> &[u8] {
-        &self.data
+        &self.raw
     }
 
     /// Returns full length of the sequence, O(1).
@@ -227,9 +230,9 @@ impl Sequence {
             panic!("Index out of range ({} >= {})", index, self.len);
         }
         let nt = if index % 2 == 0 {
-            self.data[index / 2] >> 4
+            self.raw[index / 2] >> 4
         } else {
-            self.data[index / 2] & 0x0f
+            self.raw[index / 2] & 0x0f
         };
         b"=ACMGRSVTWYHKDBN"[nt as usize]
     }
@@ -241,9 +244,9 @@ impl Sequence {
             panic!("Index out of range ({} >= {})", index, self.len);
         }
         let nt = if index % 2 == 0 {
-            self.data[index / 2] >> 4
+            self.raw[index / 2] >> 4
         } else {
-            self.data[index / 2] & 0x0f
+            self.raw[index / 2] & 0x0f
         };
         b"NACNGNNNTNNNNNNN"[nt as usize]
     }
@@ -259,7 +262,7 @@ impl Sequence {
 
 impl Display for Sequence {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        if self.data.len() == 0 {
+        if self.raw.len() == 0 {
             write!(f, "*")
         } else {
             for i in 0..self.len {
@@ -270,45 +273,70 @@ impl Display for Sequence {
     }
 }
 
-/// Wrapper around qualities. Raw data can be accessed as `qualities.0`, and it contains
-/// values 0-93, without +33 added.
+/// Wrapper around qualities.
 ///
 /// If `Qualities` are empty or contain `0xff`, the `Display` trait would produce `*`.
-pub struct Qualities(pub Vec<u8>);
+pub struct Qualities {
+    raw: Vec<u8>
+}
 
 impl Qualities {
     fn new() -> Self {
-        Qualities(Vec::new())
+        Qualities {
+            raw: Vec::new()
+        }
     }
 
     fn fill_from<R: Read>(&mut self, stream: &mut R, len: usize) -> io::Result<()> {
         unsafe {
-            resize(&mut self.0, len);
+            resize(&mut self.raw, len);
         }
-        stream.read_exact(&mut self.0)?;
+        stream.read_exact(&mut self.raw)?;
         Ok(())
+    }
+
+    /// Returns raw qualities, they contain values 0-93, without +33 added.
+    ///
+    /// If qualities are empty, they have the same length as `Sequence`, but are filled with `0xff`.
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    /// Returns 0 if qualities are not available.
+    pub fn len(&self) -> usize {
+        if self.is_empty() {
+            0
+        } else {
+            self.raw.len()
+        }
+    }
+
+    /// Returns `true` if raw qualities have length 0 or are filled with `0xff`.
+    /// Only the first element is checked, O(1).
+    pub fn is_empty(&self) -> bool {
+        self.raw.len() == 0 || self.raw[0] == 0xff
     }
 
     /// Returns vector with +33 added, O(n).
     pub fn to_readable(&self) -> Vec<u8> {
-        self.0.iter().map(|qual| qual + 33).collect()
+        self.raw.iter().map(|qual| qual + 33).collect()
     }
 
     /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
     pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.0.is_empty() || self.0[0] == 0xff {
+        if self.is_empty() {
             return f.write_u8(b'*');
         }
-        write_iterator(f, self.0.iter().map(|qual| qual + 33))
+        write_iterator(f, self.raw.iter().map(|qual| qual + 33))
     }
 }
 
 impl Display for Qualities {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        if self.0.len() == 0 || self.0[0] == 0xff {
+        if self.is_empty() {
             write!(f, "*")
         } else {
-            for &qual in self.0.iter() {
+            for &qual in self.raw.iter() {
                 write!(f, "{}", (qual + 33) as char)?;
             }
             Ok(())
@@ -512,9 +540,6 @@ impl Record {
         if self.is_mapped() == (self.ref_id == -1) {
             return Err(Error::Corrupted("Record (flag & 0x4) and ref_id do not match"));
         }
-        if (self.is_paired() && self.mate_is_mapped()) == (self.next_ref_id == -1) {
-            return Err(Error::Corrupted("Record (flag & 0x8) and next_ref_id do not match"));
-        }
 
         Ok(())
     }
@@ -548,8 +573,8 @@ impl Record {
     pub fn shrink_to_fit(&mut self) {
         self.name.shrink_to_fit();
         self.cigar.shrink_to_fit();
-        self.seq.data.shrink_to_fit();
-        self.qual.0.shrink_to_fit();
+        self.seq.raw.shrink_to_fit();
+        self.qual.raw.shrink_to_fit();
     }
 
     /// Returns record name as bytes.
@@ -564,7 +589,7 @@ impl Record {
 
     /// Returns record qualities, if present.
     pub fn qualities(&self) -> Option<&Qualities> {
-        if self.qual.0.len() == 0 || self.qual.0[0] == 0xff {
+        if self.qual.is_empty() {
             None
         } else {
             Some(&self.qual)
