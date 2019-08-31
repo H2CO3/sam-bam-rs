@@ -205,7 +205,7 @@ impl Index {
 
     /// For a given region the function returns [chunks](struct.Chunk.html) of BAM file that
     /// contain all records in the region.
-    pub fn fetch_chunks(&self, ref_id: i32, start: i32, end: i32) -> Vec<Chunk> {
+    pub fn fetch_chunks(&self, ref_id: u32, start: i32, end: i32) -> Vec<Chunk> {
         let mut chunks = Vec::new();
         for bin_id in region_to_bins(start, end).into_iter() {
             if let Some(bin) = self.references[ref_id as usize].bins.get(&bin_id) {

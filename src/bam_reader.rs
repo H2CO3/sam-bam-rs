@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Seek, Result, Error, Write};
-use std::io::ErrorKind::{self, InvalidData};
+use std::io::ErrorKind::{InvalidData, InvalidInput};
 use std::path::{Path, PathBuf};
 use std::result;
 
@@ -231,7 +231,7 @@ impl ModificationTime {
 
         match &self {
             ModificationTime::Ignore => {},
-            ModificationTime::Error => return Err(Error::new(ErrorKind::InvalidInput,
+            ModificationTime::Error => return Err(Error::new(InvalidInput,
                 "BAI file is younger than BAM file")),
             ModificationTime::Warn(box_fun) => box_fun("BAI file is younger than BAM file"),
         }
@@ -388,7 +388,8 @@ impl<R: Read + Seek> IndexedReader<R> {
 
     /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
     /// and intersecting half-open interval `[start-end)`.
-    pub fn fetch<'a>(&'a mut self, ref_id: i32, start: i32, end: i32) -> RegionViewer<'a, R> {
+    pub fn fetch<'a>(&'a mut self, ref_id: u32, start: u32, end: u32)
+            -> Result<RegionViewer<'a, R>> {
         self.fetch_by(ref_id, start, end, |_| true)
     }
 
@@ -398,16 +399,30 @@ impl<R: Read + Seek> IndexedReader<R> {
     /// Records will be filtered by `predicate`. It helps to slightly reduce fetching time,
     /// as some records will be removed without allocating new memory and without calculating
     /// alignment length.
-    pub fn fetch_by<'a, F>(&'a mut self, ref_id: i32, start: i32, end: i32, predicate: F)
-        -> RegionViewer<'a, R>
+    pub fn fetch_by<'a, F>(&'a mut self, ref_id: u32, start: u32, end: u32, predicate: F)
+        -> Result<RegionViewer<'a, R>>
     where F: 'static + Fn(&record::Record) -> bool
     {
+        let start = start as i32;
+        let end = end as i32;
+        if start > end {
+            return Err(Error::new(InvalidInput,
+                format!("Failed to fetch records: start > end ({} > {})", start, end)));
+        }
+        match self.header.reference_len(ref_id as usize) {
+            None => return Err(Error::new(InvalidInput,
+                format!("Failed to fetch records: out of bounds reference {}", ref_id))),
+            Some(len) if len < end => return Err(Error::new(InvalidInput,
+                format!("Failed to fetch records: end > reference length ({} > {})", end, len))),
+            _ => {},
+        }
+
         let chunks = self.index.fetch_chunks(ref_id, start, end);
-        RegionViewer {
+        Ok(RegionViewer {
             chunks_reader: bgzip::ChunksReader::new(&mut self.reader, chunks, &mut self.buffer),
             start, end,
             predicate: Box::new(predicate),
-        }
+        })
     }
 
     /// Returns BAM header.
