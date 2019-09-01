@@ -8,7 +8,7 @@ use super::{Error, resize};
 /// Enum that represents tag type for the cases when a tag contains integer.
 ///
 /// Possible values are `I8` (`c`), `U8` (`C`), `I16` (`s`), `U16` (`S`), `I32` (`i`) and `U32` (`I`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IntegerType {
     I8,
     U8,
@@ -55,7 +55,7 @@ impl IntegerType {
         }
     }
 
-    pub fn parse_raw(self, mut raw_tag: &[u8]) -> i64 {
+    fn parse_raw(self, mut raw_tag: &[u8]) -> i64 {
         use IntegerType::*;
         match self {
             I8 => unsafe { mem::transmute::<u8, i8>(raw_tag[0]) as i64 },
@@ -78,7 +78,7 @@ fn parse_float(mut raw_tag: &[u8]) -> f32 {
 }
 
 /// Enum that represents tag type for `String` and `Hex` types (`Z` and `H`).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StringType {
     String,
     Hex,
@@ -180,7 +180,7 @@ pub enum TagValue<'a> {
 impl<'a> TagValue<'a> {
     /// Get [TagValue](enum.TagValue.html) from a raw representation.
     /// This function expects the raw tag to have a correct length.
-    fn from_raw(ty: u8, mut raw_tag: &'a [u8]) -> TagValue<'a> {
+    fn from_raw(ty: u8, raw_tag: &'a [u8]) -> TagValue<'a> {
         use TagValue::*;
         if let Some(int_type) = IntegerType::from_letter(ty) {
             return Int(int_type.parse_raw(raw_tag), int_type);
@@ -241,7 +241,7 @@ impl<'a> TagValue<'a> {
 }
 
 /// Wrapper around `&u8`, used to specify tag type as _Hex_, not `String` and not `&[u8]`.
-/// Should have even number of characters.
+/// Should have an even number of characters.
 pub struct Hex<'a>(pub &'a [u8]);
 
 mod private {
@@ -276,9 +276,11 @@ mod private {
 /// We use `&str` here to distinguish between string and int array types.
 /// * hex wrapper [Hex(&[u8])](struct.Hex.html),
 ///
+/// String and Hex values cannot contain null symbols, even at the end.
+///
 /// The trait cannot be implemented for new types.
 pub trait WriteValue: private::Sealed {
-    /// Returns the number of written bytes.
+    /// Returns the number of written bytes (does not include name).
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize>;
 }
 
@@ -327,6 +329,10 @@ write_value_prim!(f32, b'f', write_f32);
 
 impl WriteValue for &str {
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        if self.bytes().any(|ch| ch == 0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Cannot write tag value: String contains null"));
+        }
         f.write_u8(b'Z')?;
         f.write_all(self.as_bytes())?;
         f.write_u8(0)?;
@@ -338,7 +344,11 @@ impl<'a> WriteValue for Hex<'a> {
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
         if self.0.len() % 2 != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "Cannot write tag value: Hex string contains odd number of bytes"));
+                "Cannot write tag value: Hex string contains an odd number of bytes"));
+        }
+        if self.0.iter().any(|&ch| ch == 0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Cannot write tag value: Hex contains null"));
         }
         f.write_u8(b'H')?;
         f.write_all(self.0)?;
@@ -354,7 +364,7 @@ impl WriteValue for &[i8] {
         unsafe {
             f.write_all(std::slice::from_raw_parts(self.as_ptr() as *const u8, self.len()))?;
         }
-        Ok(8 + self.len())
+        Ok(6 + self.len())
     }
 }
 
@@ -363,7 +373,7 @@ impl WriteValue for &[u8] {
         f.write_all(b"BC")?;
         f.write_i32::<LittleEndian>(self.len() as i32)?;
         f.write_all(self)?;
-        Ok(8 + self.len())
+        Ok(6 + self.len())
     }
 }
 
@@ -376,7 +386,7 @@ macro_rules! write_value_array {
                 for v in self.iter() {
                     f.$fun::<LittleEndian>(*v)?;
                 }
-                Ok(8 + self.len() * mem::size_of::<$name>())
+                Ok(6 + self.len() * mem::size_of::<$name>())
             }
         }
     }
@@ -418,7 +428,7 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
             for i in 3..raw_tags.len() {
                 if raw_tags[i] == 0 {
                     if ty == b'H' && i % 2 != 0 {
-                        return Err(Error::Corrupted("Hex tag has odd number of bytes"));
+                        return Err(Error::Corrupted("Hex tag has an odd number of bytes"));
                     }
                     // 3 (tag:ty) + index + 1
                     return Ok(4 + i as u32);
@@ -449,12 +459,12 @@ impl TagViewer {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.raw.clear();
-        self.lengths.clear();
+    pub(crate) fn shrink_to_fit(&mut self) {
+        self.raw.shrink_to_fit();
+        self.lengths.shrink_to_fit();
     }
 
-    fn fill_from<R: Read>(&mut self, stream: &mut R, length: usize) -> Result<(), Error> {
+    pub(crate) fn fill_from<R: Read>(&mut self, stream: &mut R, length: usize) -> Result<(), Error> {
         unsafe {
             resize(&mut self.raw, length);
         }
@@ -480,8 +490,8 @@ impl TagViewer {
         for &tag_len in self.lengths.iter() {
             let tag_len = tag_len as usize;
             if name == &self.raw[start..start + 2] {
-                return Some(TagValue::from_raw(self.raw[start + 3],
-                    &self.raw[start + 4..start + tag_len]));
+                return Some(TagValue::from_raw(self.raw[start + 2],
+                    &self.raw[start + 3..start + tag_len]));
             }
             start += tag_len;
         }
@@ -508,42 +518,59 @@ impl TagViewer {
     ///
     /// See [WriteValue](trait.WriteValue.html) for more information.
     pub fn push<V: WriteValue>(&mut self, name: &TagName, value: V) -> io::Result<()> {
-        self.lengths.push(value.write(&mut self.raw)? as u32);
+        self.raw.push(name[0]);
+        self.raw.push(name[1]);
+        self.lengths.push(2 + value.write(&mut self.raw)? as u32);
         Ok(())
     }
 
-    /// Inserts a new tag instead of existing. If there is no tags with the same name, pushes to
-    /// the end. Takes O(raw_tags_len + new_tag_len).
-    pub fn insert<V: WriteValue>(&mut self, name: &TagName, value: V) -> io::Result<()> {
+    /// Inserts a new tag instead of existing and returns iterator over the previous raw data
+    /// (including type but not including name).
+    ///
+    /// If there is no tags with the same name, pushes to
+    /// the end and returns `None`. Takes O(raw_tags_len + new_tag_len).
+    pub fn insert<'a, V: WriteValue>(&'a mut self, name: &TagName, value: V)
+            // -> io::Result<Option<std::vec::Splice<'_, std::vec::IntoIter<u8>>>> {
+            -> io::Result<Option<impl Iterator<Item = u8> + 'a>> {
         let mut start = 0;
         for i in 0..self.lengths.len() {
             let tag_len = self.lengths[i] as usize;
             if name == &self.raw[start..start + 2] {
                 let mut new_tag = Vec::new();
                 let new_len = value.write(&mut new_tag)? as u32;
-                self.raw.splice(start + 4..start + tag_len, new_tag);
+                let res = self.raw.splice(start + 3..start + tag_len, new_tag);
                 self.lengths[i] = new_len;
-                return Ok(());
+                return Ok(Some(res));
             }
             start += tag_len;
         }
-        self.push(name, value)
+        self.push(name, value)?;
+        Ok(None)
     }
 
-    /// Removes a tag, if present. Takes O(raw_tags_len).
-    /// Returns `true`, if the element was deleted, and `false` otherwise.
-    pub fn remove(&mut self, name: &TagName) -> bool {
+    /// Removes a tag, if present, and returns iterator over the previous raw data
+    /// (including name and type). Takes O(raw_tags_len).
+    pub fn remove<'a>(&'a mut self, name: &TagName) -> Option<impl Iterator<Item = u8> + 'a> {
         let mut start = 0;
         for i in 0..self.lengths.len() {
             let tag_len = self.lengths[i] as usize;
             if name == &self.raw[start..start + 2] {
-                self.raw.drain(start + 4..start + tag_len);
+                let res = self.raw.drain(start..start + tag_len);
                 self.lengths.remove(i);
-                return true;
+                return Some(res);
             }
             start += tag_len;
         }
-        false
+        None
+    }
+
+    /// Write tags in a SAM format
+    pub fn write_sam<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        for (name, value) in self.iter() {
+            f.write_all(&[name[0], name[1], b':'])?;
+            value.write_sam(f)?;
+        }
+        Ok(())
     }
 }
 
@@ -564,8 +591,8 @@ impl<'a> Iterator for TagIter<'a> {
                 let start = self.pos;
                 self.pos += tag_len;
                 let name = [self.raw[start], self.raw[start + 1]];
-                Some((name, TagValue::from_raw(self.raw[start + 3],
-                        &self.raw[start + 4..start + tag_len])))
+                Some((name, TagValue::from_raw(self.raw[start + 2],
+                        &self.raw[start + 3..start + tag_len])))
             },
             None => None,
         }

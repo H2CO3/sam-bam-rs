@@ -10,193 +10,6 @@ use super::bam_reader::Header;
 
 pub mod tags;
 
-/// Enum that represents tag type for the cases when a tag contains integer.
-///
-/// Possible values are `I8` (`c`), `U8` (`C`), `I16` (`s`), `U16` (`S`), `I32` (`i`) and `U32` (`I`).
-pub enum IntegerType {
-    I8,
-    U8,
-    I16,
-    U16,
-    I32,
-    U32,
-}
-
-impl IntegerType {
-    /// Returns a letter that represents the integer type. For example, `i8` corresponds to `c`.
-    pub fn letter(&self) -> u8 {
-        use IntegerType::*;
-        match self {
-            I8 => b'c',
-            U8 => b'C',
-            I16 => b's',
-            U16 => b'S',
-            I32 => b'i',
-            U32 => b'I',
-        }
-    }
-}
-
-/// Enum with all possible tag values.
-///
-/// If a tag contains integer value, or array with integer values, this enum will store `i64`,
-/// to be able to contain both types `i` (`i32`) and `I` (`u32`).
-pub enum TagValue {
-    Char(u8),
-    Int(i64, IntegerType),
-    Float(f32),
-    String(Vec<u8>),
-    Hex(Vec<u8>),
-    IntArray(Vec<i64>, IntegerType),
-    FloatArray(Vec<f32>),
-}
-
-impl TagValue {
-    fn vec_from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
-        use TagValue::*;
-        use IntegerType::*;
-
-        let ty = stream.read_u8()?;
-        let size = stream.read_i32::<LittleEndian>()? as usize;
-        match ty {
-            b'c' => Ok(IntArray((0..size)
-                .map(|_| stream.read_i8().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, I8)),
-            b'C' => Ok(IntArray((0..size)
-                .map(|_| stream.read_u8().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, U8)),
-            b's' => Ok(IntArray((0..size)
-                .map(|_| stream.read_i16::<LittleEndian>().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, I16)),
-            b'S' => Ok(IntArray((0..size)
-                .map(|_| stream.read_u16::<LittleEndian>().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, U16)),
-            b'i' => Ok(IntArray((0..size)
-                .map(|_| stream.read_i32::<LittleEndian>().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, I16)),
-            b'I' => Ok(IntArray((0..size)
-                .map(|_| stream.read_u32::<LittleEndian>().map(|el| el as i64))
-                .collect::<io::Result<_>>()?, U32)),
-            b'f' => {
-                let mut float_vec = vec![0.0_f32; size];
-                stream.read_f32_into::<LittleEndian>(&mut float_vec)?;
-                Ok(FloatArray(float_vec))
-            },
-            _ => Err(Error::Corrupted("Failed to read a tag")),
-        }
-    }
-
-    fn from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
-        use TagValue::*;
-        use IntegerType::*;
-
-        let ty = stream.read_u8()?;
-        match ty {
-            b'A' => Ok(Char(stream.read_u8()?)),
-            b'c' => Ok(Int(stream.read_i8()? as i64, I8)),
-            b'C' => Ok(Int(stream.read_u8()? as i64, U8)),
-            b's' => Ok(Int(stream.read_i16::<LittleEndian>()? as i64, I16)),
-            b'S' => Ok(Int(stream.read_u16::<LittleEndian>()? as i64, U16)),
-            b'i' => Ok(Int(stream.read_i32::<LittleEndian>()? as i64, I32)),
-            b'I' => Ok(Int(stream.read_u32::<LittleEndian>()? as i64, U32)),
-            b'f' => Ok(Float(stream.read_f32::<LittleEndian>()?)),
-            b'Z' | b'H' => {
-                let mut res = Vec::new();
-                loop {
-                    let symbol = stream.read_u8()?;
-                    if symbol == 0 {
-                        break;
-                    } else {
-                        res.push(symbol);
-                    }
-                }
-                if ty == b'Z' {
-                    Ok(String(res))
-                } else {
-                    Ok(Hex(res))
-                }
-            },
-            b'B' => TagValue::vec_from_stream(stream),
-            _ => Err(Error::Corrupted("Failed to read a tag (unexpected tag type)")),
-        }
-    }
-}
-
-impl Display for TagValue {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        use TagValue::*;
-        match self {
-            Char(value) => write!(f, "A:{}", *value as char),
-            Int(value, _) => write!(f, "i:{}", value),
-            Float(value) => write!(f, "f:{}", value),
-            String(value) => write!(f, "Z:{}", std::string::String::from_utf8_lossy(value)),
-            Hex(value) => write!(f, "H:{}", std::str::from_utf8(value)
-                .expect("Corrupted record: Hex tag is not in UTF-8")),
-            IntArray(array, ty) => {
-                write!(f, "B:{}", ty.letter() as char)?;
-                for value in array.iter() {
-                    write!(f, ",{}", value)?;
-                }
-                Ok(())
-            },
-            FloatArray(array) => {
-                write!(f, "B:f")?;
-                for value in array.iter() {
-                    write!(f, ",{}", value)?;
-                }
-                Ok(())
-            },
-        }
-    }
-}
-
-struct Tag {
-    key: [u8; 2],
-    value: TagValue,
-}
-
-impl Tag {
-    fn new(key: [u8; 2], value: TagValue) -> Self {
-        Tag { key, value }
-    }
-
-    fn from_stream<R: Read>(stream: &mut R) -> Result<Self, Error> {
-        let mut key = [0_u8; 2];
-        stream.read_exact(&mut key)?;
-        let value = TagValue::from_stream(stream)?;
-        Ok(Tag { key, value })
-    }
-}
-
-impl Display for Tag {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{}{}:", self.key[0] as char, self.key[1] as char)?;
-        self.value.fmt(f)
-    }
-}
-
-/// Wrapper around raw tags
-pub struct TagViewer {
-    raw: Vec<u8>,
-}
-
-impl TagViewer {
-    /// Create a new tag viewer
-    fn new() -> Self {
-        Self {
-            raw: Vec::new(),
-        }
-    }
-
-    fn fill_from<R: Read>(&mut self, stream: &mut R, length: usize) -> io::Result<()> {
-        unsafe {
-            resize(&mut self.raw, length);
-        }
-        stream.read_exact(&mut self.raw)?;
-        Ok(())
-    }
-}
-
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
 ///
@@ -461,7 +274,7 @@ pub struct Record {
     cigar: Cigar,
     seq: Sequence,
     qual: Qualities,
-    tags: Vec<Tag>,
+    tags: tags::TagViewer,
 }
 
 impl Record {
@@ -483,7 +296,7 @@ impl Record {
             cigar: Cigar::new(),
             seq: Sequence::new(),
             qual: Qualities::new(),
-            tags: Vec::new(),
+            tags: tags::TagViewer::new(),
         }
     }
 
@@ -549,13 +362,7 @@ impl Record {
         let seq_len = (qual_len + 1) / 2;
         let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
             - seq_len - qual_len;
-        let mut tags_vec = vec![0; remaining_size];
-        stream.read_exact(&mut tags_vec)?;
-        self.tags.clear();
-        let mut tags_reader = &tags_vec[..];
-        while tags_reader.len() > 0 {
-            self.tags.push(Tag::from_stream(&mut tags_reader)?);
-        }
+        self.tags.fill_from(stream, remaining_size)?;
         self.replace_cigar_if_needed()?;
 
         if self.is_mapped() == (self.ref_id == -1) {
@@ -578,12 +385,17 @@ impl Record {
             }
             *self.end.get_mut() = self.start + len as i32;
 
-            let cigar_arr = match self.remove_tag(b"CG") {
-                Some(TagValue::IntArray(arr, _)) => arr,
+            let cigar_arr = match self.tags.get(b"CG") {
+                Some(tags::TagValue::IntArray(array_view)) => {
+                    if array_view.int_type() != tags::IntegerType::U32 {
+                        return Err(Error::Corrupted("CG tag has an incorrect type"));
+                    }
+                    array_view
+                },
                 _ => return Err(Error::Corrupted("Record should contain tag CG, but does not")),
             };
             self.cigar.0.clear();
-            self.cigar.0.extend(cigar_arr.into_iter().map(|el| el as u32));
+            self.cigar.0.extend(cigar_arr.iter().map(|el| el as u32));
         }
         Ok(())
     }
@@ -596,6 +408,7 @@ impl Record {
         self.cigar.shrink_to_fit();
         self.seq.raw.shrink_to_fit();
         self.qual.raw.shrink_to_fit();
+        self.tags.shrink_to_fit();
     }
 
     /// Returns record name as bytes.
@@ -682,41 +495,9 @@ impl Record {
         self.template_len
     }
 
-    /// Return [tag value](enum.TagValue.html) with `tag_name`, if there is one. Takes `O(n_tags)`.
-    pub fn get_tag(&self, tag_name: &[u8; 2]) -> Option<&TagValue> {
-        for tag in self.tags.iter() {
-            if &tag.key == tag_name {
-                return Some(&tag.value);
-            }
-        }
-        None
-    }
-
-    /// Remove tag and return its value. Returns `None`, if the record does not contain such tag.
-    /// Takes `O(n_tags)`.
-    pub fn remove_tag(&mut self, tag_name: &[u8; 2]) -> Option<TagValue> {
-        for i in 0..self.tags.len() {
-            if &self.tags[i].key == tag_name {
-                return Some(self.tags.remove(i).value);
-            }
-        }
-        None
-    }
-
-    /// Add a tag and its value. Does not check if the tag already exists. Takes O(1).
-    pub fn push_tag(&mut self, tag_name: &[u8; 2], value: TagValue) {
-        self.tags.push(Tag::new(*tag_name, value))
-    }
-
-    /// Add a tag and its value. Replaces an existing tag if there was one and pushes
-    /// the new tag to the end otherwise. Takes `O(n_tags)`. Returns old value, if there was one.
-    pub fn replace_tag(&mut self, tag_name: &[u8; 2], value: TagValue) -> Option<TagValue> {
-        for i in 0..self.tags.len() {
-            if &self.tags[i].key == tag_name {
-                return Some(std::mem::replace(&mut self.tags[i].value, value));
-            }
-        }
-        None
+    /// Returns [TagViewer](tags/struct.TagViewer.struct), which provides operations of tags.
+    pub fn tags(&self) -> &tags::TagViewer {
+        &self.tags
     }
 
     /// Write the record in SAM format to `f`. The function needs
@@ -748,10 +529,7 @@ impl Record {
         self.seq.write_readable(f)?;
         f.write_u8(b'\t')?;
         self.qual.write_readable(f)?;
-
-        for tag in self.tags.iter() {
-            write!(f, "\t{}", tag)?;
-        }
+        self.tags.write_sam(f)?;
         writeln!(f)
     }
 
