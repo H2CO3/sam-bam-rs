@@ -8,6 +8,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use super::cigar::{self, Cigar};
 use super::bam_reader::Header;
 
+pub mod tags;
+
 /// Enum that represents tag type for the cases when a tag contains integer.
 ///
 /// Possible values are `I8` (`c`), `U8` (`C`), `I16` (`s`), `U16` (`S`), `I32` (`i`) and `U32` (`I`).
@@ -174,7 +176,26 @@ impl Display for Tag {
 }
 
 /// Wrapper around raw tags
-pub struct TagViewer(pub Vec<u8>);
+pub struct TagViewer {
+    raw: Vec<u8>,
+}
+
+impl TagViewer {
+    /// Create a new tag viewer
+    fn new() -> Self {
+        Self {
+            raw: Vec::new(),
+        }
+    }
+
+    fn fill_from<R: Read>(&mut self, stream: &mut R, length: usize) -> io::Result<()> {
+        unsafe {
+            resize(&mut self.raw, length);
+        }
+        stream.read_exact(&mut self.raw)?;
+        Ok(())
+    }
+}
 
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
