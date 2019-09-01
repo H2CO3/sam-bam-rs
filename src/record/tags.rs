@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::mem;
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{Error, resize};
 
@@ -240,6 +240,155 @@ impl<'a> TagValue<'a> {
     }
 }
 
+/// Wrapper around `&u8`, used to specify tag type as _Hex_, not `String` and not `&[u8]`.
+/// Should have even number of characters.
+pub struct Hex<'a>(pub &'a [u8]);
+
+mod private {
+    /// Sealed trait, designed to forbid new implementations of `WriteValue`.
+    pub trait Sealed {}
+    impl Sealed for char {}
+    impl Sealed for i8 {}
+    impl Sealed for u8 {}
+    impl Sealed for i16 {}
+    impl Sealed for u16 {}
+    impl Sealed for i32 {}
+    impl Sealed for u32 {}
+    impl Sealed for f32 {}
+    
+    impl Sealed for &str {}
+    impl<'a> Sealed for super::Hex<'a> {}
+    
+    impl Sealed for &[i8] {}
+    impl Sealed for &[u8] {}
+    impl Sealed for &[i16] {}
+    impl Sealed for &[u16] {}
+    impl Sealed for &[i32] {}
+    impl Sealed for &[u32] {}
+    impl Sealed for &[f32] {}
+}
+
+/// A trait for writing tag values. Implemented for:
+/// * `char`, but will return error, if char takes more than one byte,
+/// * numeric values `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `f32`,
+/// * numeric slices `&[i8]`, `&[u8]`, `&[i16]`, ..., `&[f32]`,
+/// * string slice `&str`. You can use `std::str::from_utf8_unchecked` to convert `&[u8]` to `&str`.
+/// We use `&str` here to distinguish between string and int array types.
+/// * hex wrapper [Hex(&[u8])](struct.Hex.html),
+///
+/// The trait cannot be implemented for new types.
+pub trait WriteValue: private::Sealed {
+    /// Returns the number of written bytes.
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize>;
+}
+
+impl WriteValue for char {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        if self.len_utf8() != 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Cannot write tag value: char value takes more than one byte"));
+        }
+        f.write_all(&[b'A', *self as u8])?;
+        Ok(2)
+    }
+}
+
+impl WriteValue for i8 {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_all(&[b'c', unsafe { std::mem::transmute::<i8, u8>(*self) }])?;
+        Ok(2)
+    }
+}
+
+impl WriteValue for u8 {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_all(&[b'C', *self])?;
+        Ok(2)
+    }
+}
+
+macro_rules! write_value_prim {
+    ($name:ty, $letter:expr, $fun:ident) => {
+        impl WriteValue for $name {
+            fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+                f.write_u8($letter)?;
+                f.$fun::<LittleEndian>(*self)?;
+                Ok(1 + mem::size_of::<$name>())
+            }
+        }
+    }
+}
+
+write_value_prim!(i16, b's', write_i16);
+write_value_prim!(u16, b'S', write_u16);
+write_value_prim!(i32, b'i', write_i32);
+write_value_prim!(u32, b'I', write_u32);
+write_value_prim!(f32, b'f', write_f32);
+
+impl WriteValue for &str {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_u8(b'Z')?;
+        f.write_all(self.as_bytes())?;
+        f.write_u8(0)?;
+        Ok(2 + self.len())
+    }
+}
+
+impl<'a> WriteValue for Hex<'a> {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        if self.0.len() % 2 != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Cannot write tag value: Hex string contains odd number of bytes"));
+        }
+        f.write_u8(b'H')?;
+        f.write_all(self.0)?;
+        f.write_u8(0)?;
+        Ok(2 + self.0.len())
+    }
+}
+
+impl WriteValue for &[i8] {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_all(b"Bc")?;
+        f.write_i32::<LittleEndian>(self.len() as i32)?;
+        unsafe {
+            f.write_all(std::slice::from_raw_parts(self.as_ptr() as *const u8, self.len()))?;
+        }
+        Ok(8 + self.len())
+    }
+}
+
+impl WriteValue for &[u8] {
+    fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+        f.write_all(b"BC")?;
+        f.write_i32::<LittleEndian>(self.len() as i32)?;
+        f.write_all(self)?;
+        Ok(8 + self.len())
+    }
+}
+
+macro_rules! write_value_array {
+    ($name:ty, $letter:expr, $fun:ident) => {
+        impl WriteValue for &[$name] {
+            fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
+                f.write_all(&[b'B', $letter])?;
+                f.write_i32::<LittleEndian>(self.len() as i32)?;
+                for v in self.iter() {
+                    f.$fun::<LittleEndian>(*v)?;
+                }
+                Ok(8 + self.len() * mem::size_of::<$name>())
+            }
+        }
+    }
+}
+
+write_value_array!(i16, b's', write_i16);
+write_value_array!(u16, b'S', write_u16);
+write_value_array!(i32, b'i', write_i32);
+write_value_array!(u32, b'I', write_u32);
+write_value_array!(f32, b'f', write_f32);
+
+
 /// Wrapper around raw tags
 pub struct TagViewer {
     raw: Vec<u8>,
@@ -249,7 +398,7 @@ pub struct TagViewer {
 /// Get a size of type from letter (c -> 1), (i -> 4). Returns Error for non int/float types
 fn tag_type_size(ty: u8) -> Result<u32, Error> {
     match ty {
-        b'c' | b'C' => Ok(1),
+        b'c' | b'C' | b'A' => Ok(1),
         b's' | b'S' => Ok(2),
         b'i' | b'I' | b'f' => Ok(4),
         _ => Err(Error::Corrupted("Unexpected tag type")),
@@ -269,7 +418,7 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
             for i in 3..raw_tags.len() {
                 if raw_tags[i] == 0 {
                     if ty == b'H' && i % 2 != 0 {
-                        return Err(Error::Corrupted("Hex tag has uneven number of bytes"));
+                        return Err(Error::Corrupted("Hex tag has odd number of bytes"));
                     }
                     // 3 (tag:ty) + index + 1
                     return Ok(4 + i as u32);
@@ -348,7 +497,54 @@ impl TagViewer {
         }
     }
 
-    // pub push(&mut self, name: &TagValue, )
+    /// Appends a new tag. Trait [WriteValue](trait.WriteValue.html) implemented for possible
+    /// values, so you can push tags like this:
+    ///
+    /// ```rust
+    /// tags.push(b"AA", 10)
+    /// ```
+    ///
+    /// The function does not check, if there is a tag with the same name, O(new_tag_len).
+    ///
+    /// See [WriteValue](trait.WriteValue.html) for more information.
+    pub fn push<V: WriteValue>(&mut self, name: &TagName, value: V) -> io::Result<()> {
+        self.lengths.push(value.write(&mut self.raw)? as u32);
+        Ok(())
+    }
+
+    /// Inserts a new tag instead of existing. If there is no tags with the same name, pushes to
+    /// the end. Takes O(raw_tags_len + new_tag_len).
+    pub fn insert<V: WriteValue>(&mut self, name: &TagName, value: V) -> io::Result<()> {
+        let mut start = 0;
+        for i in 0..self.lengths.len() {
+            let tag_len = self.lengths[i] as usize;
+            if name == &self.raw[start..start + 2] {
+                let mut new_tag = Vec::new();
+                let new_len = value.write(&mut new_tag)? as u32;
+                self.raw.splice(start + 4..start + tag_len, new_tag);
+                self.lengths[i] = new_len;
+                return Ok(());
+            }
+            start += tag_len;
+        }
+        self.push(name, value)
+    }
+
+    /// Removes a tag, if present. Takes O(raw_tags_len).
+    /// Returns `true`, if the element was deleted, and `false` otherwise.
+    pub fn remove(&mut self, name: &TagName) -> bool {
+        let mut start = 0;
+        for i in 0..self.lengths.len() {
+            let tag_len = self.lengths[i] as usize;
+            if name == &self.raw[start..start + 2] {
+                self.raw.drain(start + 4..start + tag_len);
+                self.lengths.remove(i);
+                return true;
+            }
+            start += tag_len;
+        }
+        false
+    }
 }
 
 /// Iterator over tags.
