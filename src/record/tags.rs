@@ -1,5 +1,4 @@
-use std::io::{self, Read};
-use std::io::ErrorKind::InvalidData;
+use std::io::{self, Read, Write};
 use std::mem;
 
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -158,6 +157,11 @@ impl<'a> FloatArrayView<'a> {
     pub fn iter(&self) -> impl Iterator<Item = f32> + 'a {
         self.raw.chunks(4).map(|chunk| parse_float(chunk))
     }
+
+    /// Returns raw array
+    pub fn raw(&self) -> &[u8] {
+        self.raw
+    }
 }
 
 /// Enum with all possible tag values.
@@ -178,8 +182,6 @@ impl<'a> TagValue<'a> {
     /// This function expects the raw tag to have a correct length.
     fn from_raw(ty: u8, mut raw_tag: &'a [u8]) -> TagValue<'a> {
         use TagValue::*;
-        use IntegerType::*;
-
         if let Some(int_type) = IntegerType::from_letter(ty) {
             return Int(int_type.parse_raw(raw_tag), int_type);
         }
@@ -206,6 +208,34 @@ impl<'a> TagValue<'a> {
                 panic!("Unexpected tag array type: {}", arr_ty as char);
             }
             _ => panic!("Unexpected tag type: {}", ty as char),
+        }
+    }
+
+    /// Write the tag value in a sam format
+    pub fn write_sam<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        use TagValue::*;
+        match self {
+            Char(value) => f.write_all(&[b'A', b':', *value]),
+            Int(value, _) => write!(f, "i:{}", *value),
+            Float(value) => write!(f, "f:{}", *value),
+            String(u8_slice, str_type) => {
+                f.write_all(&[str_type.letter(), b':'])?;
+                f.write_all(u8_slice)
+            },
+            IntArray(arr_view) => {
+                f.write_all(b"B:i")?;
+                for value in arr_view.iter() {
+                    write!(f, ",{}", value)?;
+                }
+                Ok(())
+            },
+            FloatArray(arr_view) => {
+                f.write_all(b"B:f")?;
+                for value in arr_view.iter() {
+                    write!(f, ",{}", value)?;
+                }
+                Ok(())
+            },
         }
     }
 }
@@ -258,6 +288,9 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
     }
 }
 
+/// Alias for a tag name. Equals to `[u8; 2]`.
+pub type TagName = [u8; 2];
+
 impl TagViewer {
     /// Create a new tag viewer
     pub(crate) fn new() -> Self {
@@ -288,6 +321,57 @@ impl TagViewer {
             Err(Error::Corrupted("Truncated tags"))
         } else {
             Ok(())
+        }
+    }
+
+    /// Returns a value of a tag with `name`. Value integer/float types, returns copied value, for
+    /// array and string types returns a wrapper over reference. Takes `O(n_tags)`.
+    pub fn get<'a>(&'a self, name: &TagName) -> Option<TagValue<'a>> {
+        let mut start = 0;
+        for &tag_len in self.lengths.iter() {
+            let tag_len = tag_len as usize;
+            if name == &self.raw[start..start + 2] {
+                return Some(TagValue::from_raw(self.raw[start + 3],
+                    &self.raw[start + 4..start + tag_len]));
+            }
+            start += tag_len;
+        }
+        None
+    }
+
+    /// Iterate over tuples `(name, tag_value)`, where `name: [u8; 2]` and `tag_value: TagValue`.
+    pub fn iter<'a>(&'a self) -> TagIter<'a> {
+        TagIter {
+            pos: 0,
+            lengths: self.lengths.iter(),
+            raw: &self.raw,
+        }
+    }
+
+    // pub push(&mut self, name: &TagValue, )
+}
+
+/// Iterator over tags.
+pub struct TagIter<'a> {
+    pos: usize,
+    lengths: std::slice::Iter<'a, u32>,
+    raw: &'a [u8],
+}
+
+impl<'a> Iterator for TagIter<'a> {
+    type Item = (TagName, TagValue<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.lengths.next() {
+            Some(tag_len) => {
+                let tag_len = *tag_len as usize;
+                let start = self.pos;
+                self.pos += tag_len;
+                let name = [self.raw[start], self.raw[start + 1]];
+                Some((name, TagValue::from_raw(self.raw[start + 3],
+                        &self.raw[start + 4..start + tag_len])))
+            },
+            None => None,
         }
     }
 }
