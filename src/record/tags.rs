@@ -93,7 +93,8 @@ impl StringType {
         }
     }
 
-    fn from_letter(ty: u8) -> Option<Self> {
+    /// Returns StringType from letters `Z` and `H`.
+    pub fn from_letter(ty: u8) -> Option<Self> {
         match ty {
             b'Z' => Some(StringType::String),
             b'H' => Some(StringType::Hex),
@@ -109,7 +110,7 @@ pub struct IntArrayView<'a> {
 }
 
 impl<'a> IntArrayView<'a> {
-    /// Get the type of the inner array
+    /// Get the type of the inner array.
     pub fn int_type(&self) -> IntegerType {
         self.int_type
     }
@@ -128,9 +129,14 @@ impl<'a> IntArrayView<'a> {
         self.int_type.parse_raw(&self.raw[start..end])
     }
 
-    /// Returns `i64` iterator
+    /// Returns iterator over values (converted into `i64`).
     pub fn iter<'b: 'a>(&'b self) -> impl Iterator<Item = i64> + 'b {
         self.raw.chunks(self.int_type.size_of()).map(move |chunk| self.int_type.parse_raw(chunk))
+    }
+
+    /// Returns raw array.
+    pub fn raw(&self) -> &[u8] {
+        self.raw
     }
 }
 
@@ -158,7 +164,7 @@ impl<'a> FloatArrayView<'a> {
         self.raw.chunks(4).map(|chunk| parse_float(chunk))
     }
 
-    /// Returns raw array
+    /// Returns raw array.
     pub fn raw(&self) -> &[u8] {
         self.raw
     }
@@ -167,7 +173,7 @@ impl<'a> FloatArrayView<'a> {
 /// Enum with all possible tag values.
 ///
 /// If a tag contains integer value, or array with integer values, this enum will store `i64`,
-/// to be able to contain both types `i` (`i32`) and `I` (`u32`).
+/// to be able to contain both types `i32` and `u32`.
 pub enum TagValue<'a> {
     Char(u8),
     Int(i64, IntegerType),
@@ -196,12 +202,12 @@ impl<'a> TagValue<'a> {
                 let arr_ty = raw_tag[0];
                 if arr_ty == b'f' {
                     return FloatArray(FloatArrayView {
-                        raw: &raw_tag[1..],
+                        raw: &raw_tag[5..],
                     });
                 }
                 if let Some(int_type) = IntegerType::from_letter(arr_ty) {
                     return IntArray(IntArrayView {
-                        raw: &raw_tag[1..],
+                        raw: &raw_tag[5..],
                         int_type,
                     });
                 }
@@ -211,7 +217,7 @@ impl<'a> TagValue<'a> {
         }
     }
 
-    /// Write the tag value in a sam format
+    /// Write the tag value in a sam format.
     pub fn write_sam<W: Write>(&self, f: &mut W) -> io::Result<()> {
         use TagValue::*;
         match self {
@@ -399,7 +405,7 @@ write_value_array!(u32, b'I', write_u32);
 write_value_array!(f32, b'f', write_f32);
 
 
-/// Wrapper around raw tags
+/// Wrapper around raw tags.
 pub struct TagViewer {
     raw: Vec<u8>,
     lengths: Vec<u32>,
@@ -507,16 +513,21 @@ impl TagViewer {
         }
     }
 
-    /// Appends a new tag. Trait [WriteValue](trait.WriteValue.html) implemented for possible
-    /// values, so you can push tags like this:
-    ///
+    /// Appends a new tag. Trait [WriteValue](trait.WriteValue.html) is implemented for possible
+    /// tag values, so you can add new tags like this:
     /// ```rust
-    /// tags.push(b"AA", 10)
+    /// record.tags_mut().push(b"AA", 10)
+    /// ```
+    /// Due to Rust constraints, you may need to explicitly coerce a numeric array to a slice,
+    /// for example
+    /// ```rust
+    /// record.tags_mut().push(b"BB", &[10_i16, 20, 30] as &[i16]).unwrap();
     /// ```
     ///
-    /// The function does not check, if there is a tag with the same name, O(new_tag_len).
+    /// This function does not check if there is already a tag with the same name.
+    /// Takes `O(new_tag_len)`.
     ///
-    /// See [WriteValue](trait.WriteValue.html) for more information.
+    /// See [WriteValue](trait.WriteValue.html) for more information. 
     pub fn push<V: WriteValue>(&mut self, name: &TagName, value: V) -> io::Result<()> {
         self.raw.push(name[0]);
         self.raw.push(name[1]);
@@ -524,50 +535,46 @@ impl TagViewer {
         Ok(())
     }
 
-    /// Inserts a new tag instead of existing and returns iterator over the previous raw data
-    /// (including type but not including name).
-    ///
+    /// Inserts a new tag instead of existing.
     /// If there is no tags with the same name, pushes to
-    /// the end and returns `None`. Takes O(raw_tags_len + new_tag_len).
-    pub fn insert<'a, V: WriteValue>(&'a mut self, name: &TagName, value: V)
-            // -> io::Result<Option<std::vec::Splice<'_, std::vec::IntoIter<u8>>>> {
-            -> io::Result<Option<impl Iterator<Item = u8> + 'a>> {
+    /// the end and returns `None`. Takes `O(raw_tags_len + new_tag_len)`.
+    pub fn insert<'a, V: WriteValue>(&'a mut self, name: &TagName, value: V) -> io::Result<()> {
         let mut start = 0;
         for i in 0..self.lengths.len() {
             let tag_len = self.lengths[i] as usize;
             if name == &self.raw[start..start + 2] {
                 let mut new_tag = Vec::new();
                 let new_len = value.write(&mut new_tag)? as u32;
-                let res = self.raw.splice(start + 3..start + tag_len, new_tag);
-                self.lengths[i] = new_len;
-                return Ok(Some(res));
+                self.raw.splice(start + 2..start + tag_len, new_tag);
+                self.lengths[i] = 2 + new_len;
+                return Ok(());
             }
             start += tag_len;
         }
         self.push(name, value)?;
-        Ok(None)
+        Ok(())
     }
 
-    /// Removes a tag, if present, and returns iterator over the previous raw data
-    /// (including name and type). Takes O(raw_tags_len).
-    pub fn remove<'a>(&'a mut self, name: &TagName) -> Option<impl Iterator<Item = u8> + 'a> {
+    /// Removes a tag if present. Returns `true` if the tag existed and `false` otherwise.
+    /// Takes `O(raw_tags_len)`.
+    pub fn remove<'a>(&'a mut self, name: &TagName) -> bool {
         let mut start = 0;
         for i in 0..self.lengths.len() {
             let tag_len = self.lengths[i] as usize;
             if name == &self.raw[start..start + 2] {
-                let res = self.raw.drain(start..start + tag_len);
+                self.raw.drain(start..start + tag_len);
                 self.lengths.remove(i);
-                return Some(res);
+                return true;
             }
             start += tag_len;
         }
-        None
+        false
     }
 
-    /// Write tags in a SAM format
+    /// Writes tags in a SAM format.
     pub fn write_sam<W: Write>(&self, f: &mut W) -> io::Result<()> {
         for (name, value) in self.iter() {
-            f.write_all(&[name[0], name[1], b':'])?;
+            f.write_all(&[b'\t', name[0], name[1], b':'])?;
             value.write_sam(f)?;
         }
         Ok(())

@@ -495,9 +495,14 @@ impl Record {
         self.template_len
     }
 
-    /// Returns [TagViewer](tags/struct.TagViewer.struct), which provides operations of tags.
+    /// Returns [TagViewer](tags/struct.TagViewer.html), which provides operations of tags.
     pub fn tags(&self) -> &tags::TagViewer {
         &self.tags
+    }
+
+    /// Returns mutable [TagViewer](tags/struct.TagViewer.html), which provides operations of tags.
+    pub fn tags_mut(&mut self) -> &mut tags::TagViewer {
+        &mut self.tags
     }
 
     /// Write the record in SAM format to `f`. The function needs
