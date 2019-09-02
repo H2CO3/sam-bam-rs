@@ -172,8 +172,16 @@ impl<'a> FloatArrayView<'a> {
 
 /// Enum with all possible tag values.
 ///
-/// If a tag contains integer value, or array with integer values, this enum will store `i64`,
-/// to be able to contain both types `i32` and `u32`.
+/// # Variants
+/// * `Char` - contains a one-byte character,
+/// * `Int(i64, IntegerType)` - contains an integer in `i64` format to be able to store both
+/// `i32` and `u32`. Enum [IntegerType](enum.IntegerType.html) specifies initial integer size.
+/// * `Float` - contains a float,
+/// * `String(&[u8], StringType)` - contains a string as bytes and a [type](enum.StringType.html)
+/// of the string - `String` or `Hex`.
+/// * `IntArray` - contains a [view](struct.IntArrayView.html) over an integer array, which
+/// allows to get an element at a specific index and iterate over all values,
+/// * `FloatArray` - contains a [view](struct.FloatArrayView.html) over a float array.
 pub enum TagValue<'a> {
     Char(u8),
     Int(i64, IntegerType),
@@ -280,7 +288,7 @@ mod private {
 /// * numeric slices `&[i8]`, `&[u8]`, `&[i16]`, ..., `&[f32]`,
 /// * string slice `&str`. You can use `std::str::from_utf8_unchecked` to convert `&[u8]` to `&str`.
 /// We use `&str` here to distinguish between string and int array types.
-/// * hex wrapper [Hex(&[u8])](struct.Hex.html),
+/// * [hex wrapper](struct.Hex.html) over `&[u8]`,
 ///
 /// String and Hex values cannot contain null symbols, even at the end.
 ///
@@ -406,6 +414,30 @@ write_value_array!(f32, b'f', write_f32);
 
 
 /// Wrapper around raw tags.
+///
+/// Allows to get and modify record tags. Method [get](#method.get) returns a
+/// [TagValue](enum.TagValue.html), which is a viewer of raw data (it does not copy the data,
+/// unless it has a numeric/char type).
+///
+/// Methods [push](#method.push) and [insert](#method.insert) add a tag (or modify a tag),
+/// and they provide a convinient way to specify tag type. For numeric and string types, you
+/// can just write
+/// ```rust
+/// // Add a new tag with name `AA`, type `i32` and value `10`.
+/// record.tags_mut().push(b"AA", 10_i32);
+/// // Add a new tag with name `ZZ`, type `string` and value `"abcd"`.
+/// record.tags_mut().push(b"ZZ", "abcd");
+/// ```
+/// To add a Hex value you need to wrap `&[u8]` in a [Hex](struct.Hex.html) wrapper:
+/// ```rust
+/// // Add a new tag with name `HH`, type `hex` and value `"FF00"`.
+/// record.tags_mut().push(b"HH", Hex(b"FF00"));
+/// ```
+/// Finally, to specify a numeric array, you may need to coerce the array to a splice:
+/// ```rust
+/// // Add a new tag with name `BB`, type `i16 array` and value `[3, 4, 5, 6]`.
+/// record.tags_mut().push(b"BB", &[3_i16, 4, 5, 6] as &[i16]);
+/// ```
 pub struct TagViewer {
     raw: Vec<u8>,
     lengths: Vec<u32>,
@@ -453,7 +485,7 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
     }
 }
 
-/// Alias for a tag name. Equals to `[u8; 2]`.
+/// Alias for a tag name.
 pub type TagName = [u8; 2];
 
 impl TagViewer {
