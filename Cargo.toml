@@ -9,6 +9,7 @@ readme = "README.md"
 license = "MIT"
 keywords = ["bam", "htslib", "backend", "bio", "bgzip"]
 documentation = "https://docs.rs/bam"
+exclude = [".cargo_vcs_info.json", ".gitignore"]
 
 [profile.test]
 opt-level = 3
