@@ -30,7 +30,7 @@ fn main() {
     let header = reader.header().clone();
     let mut stdout = std::io::BufWriter::new(std::io::stdout());
 
-    for record in reader.fetch(1, 100_000, 200_000) {
+    for record in reader.fetch(1, 100_000, 200_000).unwrap() {
         record.unwrap().write_sam(&mut stdout, &header).unwrap();
     }
 }
@@ -56,6 +56,10 @@ fn main() {
 You can find more detailed usage [here](https://docs.rs/bam).
 
 ## Changelog
+* 0.0.5 - Improved interaction with tags, in addition:
+    - now `fetch` and `fetch_by` return an error, if the fetched region is out of bounds,
+    - during the construction of `IndexedReader`, you can specify how to handle a situation when
+    BAI index is younger than a BAM file (ignore, return error, warn).
 * 0.0.4 - Bug fixes, optimized writing in SAM format,
 * 0.0.3 - Switched to a new `inflate` crate, additional reading speedup,
 * 0.0.2 - Support for consecutive reader `bam::Reader`,

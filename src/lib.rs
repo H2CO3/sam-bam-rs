@@ -32,60 +32,13 @@
 //!     let header = reader.header().clone();
 //!     let mut stdout = std::io::BufWriter::new(std::io::stdout());
 //!
-//!     for record in reader.fetch(1, 100_000, 200_000) {
+//!     for record in reader.fetch(1, 100_000, 200_000).unwrap() {
 //!         record.unwrap().write_sam(&mut stdout, &header).unwrap();
 //!     }
 //! }
 //! ```
 //!
-//! Additionally, you can use `read_into(&mut record)` to save time on record allocation:
-//! ```rust
-//! extern crate bam;
-//!
-//! // You need to import BamReader trait
-//! use bam::BamReader;
-//!
-//! fn main() {
-//!     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
-//!
-//!     let header = reader.header().clone();
-//!     let mut stdout = std::io::BufWriter::new(std::io::stdout());
-//!
-//!     let mut viewer = reader.fetch(1, 100_000, 200_000);
-//!     let mut record = bam::Record::new();
-//!     loop {
-//!         match viewer.read_into(&mut record) {
-//!             Ok(()) => {},
-//!             Err(bam::Error::NoMoreRecords) => break,
-//!             Err(e) => panic!("{}", e),
-//!         }
-//!         record.write_sam(&mut stdout, &header).unwrap();
-//!     }
-//! }
-//! ```
-//!
-//! Note that currently printing the read is much slower than loading it. Without printing, it
-//! takes almost the same time to load records using *bam* crate and `samtools view`.
-//!
-//! If only records with specific MAPQ or FLAGs are needed, you can use `fetch_by`. For example,
-//! ```rust
-//! reader.fetch_by(1, 100_000, 200_000,
-//!     |record| record.mapq() >= 30 && !record.is_secondary())
-//! ```
-//! to load only records with MAPQ at least 30 and skip all secondary alignments. In some cases it
-//! helps to save time by not calculating the right-most aligned read position, as well as
-//! remove additional allocations.
-//!
-//! You can also use [IndexedReaderBuilder](bam_reader/struct.IndexedReaderBuilder.html),
-//! which gives more control over loading
-//! [IndexedReader](bam_reader/struct.IndexedReader.html).
-//! For example you can create a reader using a different BAI path, and a different cache capacity:
-//! ```rust
-//! let mut reader = bam::IndexedReader::build()
-//!     .bai_path("other_dir/test.bai")
-//!     .cache_capacity(10000)
-//!     .from_path("test.bam").unwrap();
-//! ```
+//! Find more at [IndexedReader](bam_reader/struct.IndexedReader.html).
 //!
 //! ### Reader
 //!
@@ -108,32 +61,7 @@
 //! }
 //! ```
 //!
-//! Similarly, you can skip allocation with
-//! ```rust
-//! extern crate bam;
-//!
-//! // You need to import BamReader trait
-//! use bam::BamReader;
-//!
-//! fn main() {
-//!     let mut reader = bam::Reader::from_path("test.bam").unwrap();
-//!
-//!     let header = reader.header().clone();
-//!     let mut stdout = std::io::BufWriter::new(std::io::stdout());
-//!
-//!     let mut record = bam::Record::new();
-//!     loop {
-//!         match reader.read_into(&mut record) {
-//!             Ok(()) => {},
-//!             Err(bam::Error::NoMoreRecords) => break,
-//!             Err(e) => panic!("{}", e),
-//!         }
-//!         record.write_sam(&mut stdout, &header).unwrap();
-//!     }
-//! }
-//! ```
-//!
-//! However, there is no way to skip records using a predicate like `fetch_by`.
+//! Find more at [Reader](bam_reader/struct.Reader.html).
 //!
 //! ## CRC32
 //!

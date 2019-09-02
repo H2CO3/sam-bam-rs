@@ -345,13 +345,69 @@ impl IndexedReaderBuilder {
 ///     let header = reader.header().clone();
 ///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
 ///
-///     for record in reader.fetch(1, 100_000, 200_000) {
+///     for record in reader.fetch(1, 100_000, 200_000).unwrap() {
 ///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
 ///     }
 /// }
 /// ```
 ///
-/// You can find more detailed help on the [main page](../index.html#indexedreader).
+/// Additionally, you can use `read_into(&mut record)` to save time on record allocation:
+/// ```rust
+/// extern crate bam;
+///
+/// // You need to import BamReader trait
+/// use bam::BamReader;
+///
+/// fn main() {
+///     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
+///
+///     let header = reader.header().clone();
+///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///
+///     let mut viewer = reader.fetch(1, 100_000, 200_000).unwrap();
+///     let mut record = bam::Record::new();
+///     loop {
+///         match viewer.read_into(&mut record) {
+///             Ok(()) => {},
+///             Err(bam::Error::NoMoreRecords) => break,
+///             Err(e) => panic!("{}", e),
+///         }
+///         record.write_sam(&mut stdout, &header).unwrap();
+///     }
+/// }
+/// ```
+///
+/// If only records with specific MAPQ or FLAGs are needed, you can use `fetch_by`. For example,
+/// ```rust
+/// reader.fetch_by(1, 100_000, 200_000,
+///     |record| record.mapq() >= 30 && !record.is_secondary())
+/// ```
+/// to load only records with MAPQ at least 30 and skip all secondary alignments. In some cases it
+/// helps to save time by not calculating the right-most aligned read position, as well as
+/// remove additional allocations.
+///
+/// You can also use [IndexedReaderBuilder](struct.IndexedReaderBuilder.html),
+/// which gives more control over loading
+/// [IndexedReader](struct.IndexedReader.html).
+/// For example you can create a reader using a different BAI path, and a different cache capacity:
+/// ```rust
+/// let mut reader = bam::IndexedReader::build()
+///     .bai_path("other_dir/test.bai")
+///     .cache_capacity(10000)
+///     .from_path("test.bam").unwrap();
+/// ```
+///
+/// By default, during construction of the `IndexedReader`, we compare modification times of
+/// the BAI index and the BAM file. If the index is older, the function returns an error. This can
+/// be changed:
+/// ```rust
+/// use bam::bam_reader::ModificationTime;
+/// let mut reader = bam::IndexedReader::build()
+///     .modification_time(ModificationTime::warn(|e| eprintln!("{}", e)))
+///     .from_path("test.bam").unwrap();
+/// ```
+/// You can also ignore the error completely: `.modification_time(ModificationTime::Ignore)`.
+
 pub struct IndexedReader<R: Read + Seek> {
     reader: bgzip::SeekReader<R>,
     header: Header,
@@ -458,7 +514,30 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// }
 /// ```
 ///
-/// You can find more detailed help on the [main page](../index.html#reader).
+/// You can skip excessive record allocation using `read_into`:
+/// ```rust
+/// extern crate bam;
+///
+/// // You need to import BamReader trait
+/// use bam::BamReader;
+///
+/// fn main() {
+///     let mut reader = bam::Reader::from_path("test.bam").unwrap();
+///
+///     let header = reader.header().clone();
+///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///
+///     let mut record = bam::Record::new();
+///     loop {
+///         match reader.read_into(&mut record) {
+///             Ok(()) => {},
+///             Err(bam::Error::NoMoreRecords) => break,
+///             Err(e) => panic!("{}", e),
+///         }
+///         record.write_sam(&mut stdout, &header).unwrap();
+///     }
+/// }
+/// ```
 pub struct Reader<R: Read> {
     bgzip_reader: bgzip::ConsecutiveReader<R>,
     header: Header,
