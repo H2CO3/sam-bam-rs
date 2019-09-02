@@ -468,8 +468,7 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
                     if ty == b'H' && i % 2 != 0 {
                         return Err(Error::Corrupted("Hex tag has an odd number of bytes"));
                     }
-                    // 3 (tag:ty) + index + 1
-                    return Ok(4 + i as u32);
+                    return Ok(1 + i as u32);
                 }
             }
             Err(Error::Corrupted("Truncated tags"))

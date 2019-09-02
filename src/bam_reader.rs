@@ -15,7 +15,7 @@ use super::bgzip;
 pub struct Header {
     text: Vec<u8>,
     references: Vec<String>,
-    lengths: Vec<i32>,
+    lengths: Vec<u32>,
 }
 
 impl Header {
@@ -61,7 +61,7 @@ impl Header {
                     "BAM file corrupted: negative reference length"));
             }
             res.references.push(name);
-            res.lengths.push(l_ref);
+            res.lengths.push(l_ref as u32);
         }
         Ok(res)
     }
@@ -83,7 +83,7 @@ impl Header {
 
     /// Returns the length of the reference with `ref_id` (0-based).
     /// Returns None if there is no such reference
-    pub fn reference_len(&self, ref_id: usize) -> Option<i32> {
+    pub fn reference_len(&self, ref_id: usize) -> Option<u32> {
         if ref_id > self.lengths.len() {
             None
         } else {
@@ -459,8 +459,6 @@ impl<R: Read + Seek> IndexedReader<R> {
         -> Result<RegionViewer<'a, R>>
     where F: 'static + Fn(&record::Record) -> bool
     {
-        let start = start as i32;
-        let end = end as i32;
         if start > end {
             return Err(Error::new(InvalidInput,
                 format!("Failed to fetch records: start > end ({} > {})", start, end)));
@@ -473,10 +471,11 @@ impl<R: Read + Seek> IndexedReader<R> {
             _ => {},
         }
 
-        let chunks = self.index.fetch_chunks(ref_id, start, end);
+        let chunks = self.index.fetch_chunks(ref_id, start as i32, end as i32);
         Ok(RegionViewer {
             chunks_reader: bgzip::ChunksReader::new(&mut self.reader, chunks, &mut self.buffer),
-            start, end,
+            start: start as i32,
+            end: end as i32,
             predicate: Box::new(predicate),
         })
     }

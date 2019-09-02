@@ -4,23 +4,10 @@ extern crate bam;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::cmp::min;
 use std::time::Instant;
 
 use rand::Rng;
 use bam::BamReader;
-
-fn print_records(records1: &Vec<&str>, records2: &Vec<&str>) {
-    println!("Records 1:");
-    for record in records1.iter() {
-        println!("    {}", &record[..min(record.len(), 20)]);
-    }
-
-    println!("Records 2:");
-    for record in records2.iter() {
-        println!("    {}", &record[..min(record.len(), 20)]);
-    }
-}
 
 fn compare_bam(path: &str) {
     let mut reader = bam::IndexedReader::from_path(path).unwrap();
@@ -44,19 +31,17 @@ fn compare_bam(path: &str) {
         println!("Fetching {}:{}-{}", ref_name, start + 1, end);
 
         let timer = Instant::now();
-        let mut viewer = reader.fetch(ref_id as i32, start, end);
+        let mut viewer = reader.fetch(ref_id as u32, start, end).unwrap();
         loop {
             match viewer.read_into(&mut record) {
                 Ok(()) => {},
                 Err(bam::Error::NoMoreRecords) => break,
-                Err(e) => panic!(e),
+                Err(e) => panic!("{}", e),
             }
             count += 1;
             record.write_sam(&mut output1, &header).unwrap();
         }
         println!("    bam::IndexedReader: {:?}", timer.elapsed());
-        output1.pop();
-        let output1 = std::str::from_utf8(&output1).unwrap();
 
         let timer = Instant::now();
         let samtools_output = Command::new("samtools")
@@ -67,23 +52,14 @@ fn compare_bam(path: &str) {
             .expect("failed to execute process");
         println!("    samtools view:      {:?}", timer.elapsed());
         println!("    total {} records", count);
-        let mut output2 = samtools_output.stdout;
-        output2.pop();
-        let output2 = std::str::from_utf8(&output2).unwrap();
+        let output2 = samtools_output.stdout;
 
-        let mut records1: Vec<_> = output1.split('\n').collect();
-        let mut records2: Vec<_> = output2.split('\n').collect();
-        records1.sort();
-        records2.sort();
-        if records1.len() != records2.len() {
-            print_records(&records1, &records2);
-            assert_eq!(records1.len(), records2.len());
-        }
-        for i in 0..records1.len() {
-            if records1[i] != records2[i] {
-                print_records(&records1, &records2);
-                assert_eq!(records1[i], records2[i]);
-            }
+        if output1 != output2 {
+            println!("Crate output:");
+            println!("{}\n", std::string::String::from_utf8_lossy(&output1));
+            println!("Samtools view:");
+            println!("{}\n", std::string::String::from_utf8_lossy(&output2));
+            panic!("Outputs are different for {}:{}-{}", ref_name, start + 1, end);
         }
     }
 }
