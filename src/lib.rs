@@ -89,6 +89,8 @@ pub mod cigar;
 pub mod record;
 /// A module with various BAM readers.
 pub mod bam_reader;
+/// A module that describes SAM/BAM header.
+pub mod header;
 
 pub use bam_reader::Header;
 pub use bam_reader::IndexedReader;
