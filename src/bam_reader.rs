@@ -221,19 +221,20 @@ impl ModificationTime {
     fn check<T: AsRef<Path>, U: AsRef<Path>>(&self, bam_path: T, bai_path: U) -> Result<()> {
         let bam_modified = bam_path.as_ref().metadata().and_then(|metadata| metadata.modified());
         let bai_modified = bai_path.as_ref().metadata().and_then(|metadata| metadata.modified());
-        let bai_younger = match (bam_modified, bai_modified) {
+        let bam_younger = match (bam_modified, bai_modified) {
             (Ok(bam_time), Ok(bai_time)) => bai_time < bam_time,
             _ => false, // Modification time not available.
         };
-        if !bai_younger {
+        if !bam_younger {
             return Ok(());
         }
 
         match &self {
             ModificationTime::Ignore => {},
             ModificationTime::Error => return Err(Error::new(InvalidInput,
-                "BAI file is younger than BAM file")),
-            ModificationTime::Warn(box_fun) => box_fun("BAI file is younger than BAM file"),
+                "the BAM file is younger than the BAI index")),
+            ModificationTime::Warn(box_fun) =>
+                box_fun("the BAM file is younger than the BAI index"),
         }
         Ok(())
     }

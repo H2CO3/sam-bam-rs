@@ -8,7 +8,7 @@ use super::{Error, resize};
 /// Enum that represents tag type for the cases when a tag contains integer.
 ///
 /// Possible values are `I8` (`c`), `U8` (`C`), `I16` (`s`), `U16` (`S`), `I32` (`i`) and `U32` (`I`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IntegerType {
     I8,
     U8,
@@ -78,7 +78,7 @@ fn parse_float(mut raw_tag: &[u8]) -> f32 {
 }
 
 /// Enum that represents tag type for `String` and `Hex` types (`Z` and `H`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StringType {
     String,
     Hex,

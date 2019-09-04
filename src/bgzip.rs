@@ -3,6 +3,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::path::Path;
 use std::cmp::min;
+use std::fmt::{self, Display, Debug, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use lru_cache::LruCache;
@@ -51,6 +52,28 @@ impl Into<io::Error> for BlockError {
             EndOfFile => io::Error::new(UnexpectedEof, "EOF: Failed to read bgzip block"),
             Corrupted(s) => io::Error::new(InvalidData, format!("Corrupted bgzip block: {}", s)),
             IoError(e) => e,
+        }
+    }
+}
+
+impl Display for BlockError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        use BlockError::*;
+        match self {
+            EndOfFile => write!(f, "EOF: Failed to read bgzip block"),
+            Corrupted(s) => write!(f, "Corrupted bgzip block: {}", s),
+            IoError(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl Debug for BlockError {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
+        use BlockError::*;
+        match self {
+            EndOfFile => write!(f, "EOF: Failed to read bgzip block"),
+            Corrupted(s) => write!(f, "Corrupted bgzip block: {}", s),
+            IoError(e) => write!(f, "{}", e),
         }
     }
 }

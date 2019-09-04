@@ -12,8 +12,6 @@ pub mod tags;
 
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
-///
-/// Using `Display` on an empty sequence produces `*`.
 pub struct Sequence {
     raw: Vec<u8>,
     len: usize,
@@ -94,22 +92,7 @@ impl Sequence {
     }
 }
 
-impl Display for Sequence {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        if self.raw.len() == 0 {
-            write!(f, "*")
-        } else {
-            for i in 0..self.len {
-                write!(f, "{}", self.at(i) as char)?;
-            }
-            Ok(())
-        }
-    }
-}
-
 /// Wrapper around qualities.
-///
-/// If `Qualities` are empty or contain `0xff`, the `Display` trait would produce `*`.
 pub struct Qualities {
     raw: Vec<u8>
 }
@@ -162,19 +145,6 @@ impl Qualities {
             return f.write_u8(b'*');
         }
         write_iterator(f, self.raw.iter().map(|qual| qual + 33))
-    }
-}
-
-impl Display for Qualities {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        if self.is_empty() {
-            write!(f, "*")
-        } else {
-            for &qual in self.raw.iter() {
-                write!(f, "{}", (qual + 33) as char)?;
-            }
-            Ok(())
-        }
     }
 }
 
