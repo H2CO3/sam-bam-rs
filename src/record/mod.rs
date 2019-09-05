@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::cigar::{self, Cigar};
-use super::bam_reader::Header;
+use super::header::Header;
 
 pub mod tags;
 

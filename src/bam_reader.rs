@@ -1,101 +1,13 @@
 use std::fs::File;
 use std::io::{Read, Seek, Result, Error, Write};
-use std::io::ErrorKind::{InvalidData, InvalidInput};
+use std::io::ErrorKind::InvalidInput;
 use std::path::{Path, PathBuf};
 use std::result;
-
-use byteorder::{LittleEndian, ReadBytesExt};
 
 use super::index::{self, Index};
 use super::record;
 use super::bgzip;
-
-/// BAM file header. Contains names and lengths of reference sequences.
-#[derive(Clone)]
-pub struct Header {
-    text: Vec<u8>,
-    references: Vec<String>,
-    lengths: Vec<u32>,
-}
-
-impl Header {
-    fn from_stream<R: Read>(stream: &mut R) -> Result<Header> {
-        let mut magic = [0_u8; 4];
-        stream.read_exact(&mut magic)?;
-        if magic != [b'B', b'A', b'M', 1] {
-            return Err(Error::new(InvalidData, "Input is not in BAM format"));
-        }
-
-        let l_text = stream.read_i32::<LittleEndian>()?;
-        if l_text < 0 {
-            return Err(Error::new(InvalidData, "BAM file corrupted: negative header length"));
-        }
-        let mut text = vec![0_u8; l_text as usize];
-        stream.read_exact(&mut text)?;
-        let mut res = Header {
-            text,
-            references: Vec::new(),
-            lengths: Vec::new(),
-        };
-
-        let n_refs = stream.read_i32::<LittleEndian>()?;
-        if n_refs < 0 {
-            return Err(Error::new(InvalidData, "BAM file corrupted: negative number of references"));
-        }
-        for _ in 0..n_refs {
-            let l_name = stream.read_i32::<LittleEndian>()?;
-            if l_name <= 0 {
-                return Err(Error::new(InvalidData,
-                    "BAM file corrupted: negative reference name length"));
-            }
-            let mut name = vec![0_u8; l_name as usize - 1];
-            stream.read_exact(&mut name)?;
-            let _null = stream.read_u8()?;
-            let name = std::string::String::from_utf8(name)
-                .map_err(|_| Error::new(InvalidData,
-                "BAM file corrupted: reference name not in UTF-8"))?;
-
-            let l_ref = stream.read_i32::<LittleEndian>()?;
-            if l_ref < 0 {
-                return Err(Error::new(InvalidData,
-                    "BAM file corrupted: negative reference length"));
-            }
-            res.references.push(name);
-            res.lengths.push(l_ref as u32);
-        }
-        Ok(res)
-    }
-
-    /// Returns the number of reference sequences in the BAM file.
-    pub fn n_references(&self) -> usize {
-        self.references.len()
-    }
-
-    /// Returns the name of the reference with `ref_id` (0-based).
-    /// Returns None if there is no such reference
-    pub fn reference_name(&self, ref_id: usize) -> Option<&str> {
-        if ref_id > self.references.len() {
-            None
-        } else {
-            Some(&self.references[ref_id])
-        }
-    }
-
-    /// Returns the length of the reference with `ref_id` (0-based).
-    /// Returns None if there is no such reference
-    pub fn reference_len(&self, ref_id: usize) -> Option<u32> {
-        if ref_id > self.lengths.len() {
-            None
-        } else {
-            Some(self.lengths[ref_id])
-        }
-    }
-
-    /// Returns full header text, as in BAM file
-    pub fn text(&self) -> &[u8] {
-        &self.text
-    }
-}
+use super::header::Header;
 
 /// Iterator over bam records.
 ///
@@ -436,7 +348,7 @@ impl<R: Read + Seek> IndexedReader<R> {
         let header = {
             let mut header_reader = bgzip::ChunksReader::without_boundaries(
                 &mut reader, &mut buffer);
-            Header::from_stream(&mut header_reader)?
+            Header::from_bam(&mut header_reader)?
         };
         Ok(Self {
             reader, header, index, buffer,
@@ -556,7 +468,7 @@ impl<R: Read> Reader<R> {
     /// Creates BAM file reader from `stream`. The stream does not have to support random access.
     pub fn from_stream(stream: R) -> Result<Self> {
         let mut bgzip_reader = bgzip::ConsecutiveReader::from_stream(stream)?;
-        let header = Header::from_stream(&mut bgzip_reader)?;
+        let header = Header::from_bam(&mut bgzip_reader)?;
         Ok(Self {
             bgzip_reader, header,
         })

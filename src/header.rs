@@ -297,12 +297,13 @@ impl Header {
                     writer.write_all(comment.as_bytes())?;
                 },
             }
+            writeln!(writer)?;
         }
         Ok(())
     }
 
     /// Parse uncompressed BAM header, starting with magic b"BAM\1".
-    pub fn parse_bam<R: Read>(stream: &mut R) -> Result<Self> {
+    pub fn from_bam<R: Read>(stream: &mut R) -> Result<Self> {
         let mut magic = [0_u8; 4];
         stream.read_exact(&mut magic)?;
         if magic != [b'B', b'A', b'M', 1] {
@@ -321,6 +322,9 @@ impl Header {
 
         for line in text.split('\n') {
             let line = line.trim_end();
+            if line.is_empty() {
+                continue;
+            }
             if line.starts_with("@CO") {
                 let comment = line.splitn(2, '\t').skip(1).next()
                     .ok_or_else(|| Error::new(InvalidData,
@@ -371,5 +375,30 @@ impl Header {
             }
         }
         Ok(header)
+    }
+
+    /// Returns the number of reference sequences in the BAM file.
+    pub fn n_references(&self) -> usize {
+        self.ref_names.len()
+    }
+
+    /// Returns the name of the reference with `ref_id` (0-based).
+    /// Returns None if there is no such reference
+    pub fn reference_name(&self, ref_id: usize) -> Option<&str> {
+        if ref_id > self.ref_names.len() {
+            None
+        } else {
+            Some(&self.ref_names[ref_id])
+        }
+    }
+
+    /// Returns the length of the reference with `ref_id` (0-based).
+    /// Returns None if there is no such reference
+    pub fn reference_len(&self, ref_id: usize) -> Option<u32> {
+        if ref_id > self.ref_lengths.len() {
+            None
+        } else {
+            Some(self.ref_lengths[ref_id])
+        }
     }
 }
