@@ -393,7 +393,7 @@ impl<R: Read + Seek> IndexedReader<R> {
         })
     }
 
-    /// Returns BAM header.
+    /// Returns [header](../header/struct.Header.html).
     pub fn header(&self) -> &Header {
         &self.header
     }
@@ -476,7 +476,7 @@ impl<R: Read> Reader<R> {
 }
 
 impl<R: Read> Reader<R> {
-    /// Returns BAM header.
+    /// Returns [header](../header/struct.Header.html)
     pub fn header(&self) -> &Header {
         &self.header
     }
