@@ -302,6 +302,18 @@ impl Header {
         Ok(())
     }
 
+    pub fn push_line(&mut self, line: &str) -> Result<()> {
+        if line.starts_with("@CO") {
+            let comment = line.splitn(2, '\t').skip(1).next()
+                .ok_or_else(|| Error::new(InvalidData,
+                    format!("Failed to parse comment line '{}'", line)))?;
+            self.push_comment(comment.to_string());
+        } else {
+            self.push_entry(HeaderEntry::parse_line(line)?);
+        }
+        Ok(())
+    }
+
     /// Parse uncompressed BAM header, starting with magic b"BAM\1".
     pub fn from_bam<R: Read>(stream: &mut R) -> Result<Self> {
         let mut magic = [0_u8; 4];
@@ -325,14 +337,7 @@ impl Header {
             if line.is_empty() {
                 continue;
             }
-            if line.starts_with("@CO") {
-                let comment = line.splitn(2, '\t').skip(1).next()
-                    .ok_or_else(|| Error::new(InvalidData,
-                        format!("Failed to parse comment line '{}'", line)))?;
-                header.push_comment(comment.to_string());
-            } else {
-                header.push_entry(HeaderEntry::parse_line(line)?);
-            }
+            header.push_line(line)?;
         }
 
         let n_refs = stream.read_i32::<LittleEndian>()?;

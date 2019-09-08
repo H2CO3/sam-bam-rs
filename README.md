@@ -63,7 +63,7 @@ You can find more detailed usage [here](https://docs.rs/bam).
 * 0.0.4 - Bug fixes, optimized writing in SAM format,
 * 0.0.3 - Switched to a new `inflate` crate, additional reading speedup,
 * 0.0.2 - Support for consecutive reader `bam::Reader`,
-and a `bam::BamReader` trait.
+and a `bam::RecordReader` trait.
 * 0.0.1 - Support for indexed reader `bam::IndexedReader`.
 
 ## Future versions

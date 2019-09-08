@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::Instant;
 
 use rand::Rng;
-use bam::BamReader;
+use bam::RecordReader;
 
 fn compare_bam(path: &str) {
     let mut reader = bam::IndexedReader::from_path(path).unwrap();

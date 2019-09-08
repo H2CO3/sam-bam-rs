@@ -44,7 +44,7 @@
 //!
 //! [Reader](bam_reader/struct.Reader.html) allows to read all records from the BAM file
 //! consecutively. [Reader](bam_reader/struct.Reader.html) itself is an iterator
-//! and implements the same trait [BamReader](bam_reader/trait.BamReader.html), which allows
+//! and implements the same trait [RecordReader](bam_reader/trait.RecordReader.html), which allows
 //! to load records similarly:
 //! ```rust
 //! extern crate bam;
@@ -96,7 +96,7 @@ pub mod sam;
 
 pub use bam_reader::IndexedReader;
 pub use bam_reader::Reader;
-pub use bam_reader::BamReader;
+pub use bam_reader::RecordReader;
 
 pub use header::Header;
 
@@ -104,3 +104,4 @@ pub use record::Record;
 pub use record::Error;
 
 pub use sam::SamWriter;
+pub use sam::SamReader;

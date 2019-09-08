@@ -15,7 +15,7 @@ use super::header::Header;
 /// ```rust
 ///let mut record = bam::Record::new();
 ///loop {
-///    // reader: impl BamReader
+///    // reader: impl RecordReader
 ///    match reader.read_into(&mut record) {
 ///    // New record is saved into record
 ///        Ok(()) => {},
@@ -33,7 +33,7 @@ use super::header::Header;
 ///    // Do somethind with the record
 ///}
 ///```
-pub trait BamReader: Iterator<Item = result::Result<record::Record, record::Error>> {
+pub trait RecordReader: Iterator<Item = result::Result<record::Record, record::Error>> {
     /// Writes the next record into `record`. It allows to skip excessive memory allocation.
     ///
     /// # Errors
@@ -48,10 +48,10 @@ pub trait BamReader: Iterator<Item = result::Result<record::Record, record::Erro
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error>;
 }
 
-/// Iterator over records in a specific region. Implements [BamReader](trait.BamReader.html) trait.
+/// Iterator over records in a specific region. Implements [RecordReader](trait.RecordReader.html) trait.
 ///
 /// If possible, create a single record using [Record::new](../record/struct.Record.html#method.new)
-/// and then use [read_into](trait.BamReader.html#method.read_into) instead of iterating,
+/// and then use [read_into](trait.RecordReader.html#method.read_into) instead of iterating,
 /// as it saves time on allocation.
 pub struct RegionViewer<'a, R: Read + Seek> {
     chunks_reader: bgzip::ChunksReader<'a, R>,
@@ -60,7 +60,7 @@ pub struct RegionViewer<'a, R: Read + Seek> {
     predicate: Box<Fn(&record::Record) -> bool>,
 }
 
-impl<'a, R: Read + Seek> BamReader for RegionViewer<'a, R> {
+impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
             record.fill_from(&mut self.chunks_reader)?;
@@ -268,8 +268,8 @@ impl IndexedReaderBuilder {
 /// ```rust
 /// extern crate bam;
 ///
-/// // You need to import BamReader trait
-/// use bam::BamReader;
+/// // You need to import RecordReader trait
+/// use bam::RecordReader;
 ///
 /// fn main() {
 ///     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
@@ -409,7 +409,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `Reader`
 /// allows to read all records consecutively, but does not allow random access.
 ///
-/// Implements [BamReader](struct.BamReader.html) trait.
+/// Implements [RecordReader](struct.RecordReader.html) trait.
 ///
 /// ```rust
 /// extern crate bam;
@@ -430,8 +430,8 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// ```rust
 /// extern crate bam;
 ///
-/// // You need to import BamReader trait
-/// use bam::BamReader;
+/// // You need to import RecordReader trait
+/// use bam::RecordReader;
 ///
 /// fn main() {
 ///     let mut reader = bam::Reader::from_path("test.bam").unwrap();
@@ -482,7 +482,7 @@ impl<R: Read> Reader<R> {
     }
 }
 
-impl<R: Read> BamReader for Reader<R> {
+impl<R: Read> RecordReader for Reader<R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         record.fill_from(&mut self.bgzip_reader)
     }
