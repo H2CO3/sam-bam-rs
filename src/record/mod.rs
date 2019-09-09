@@ -11,7 +11,7 @@ use super::header::Header;
 pub mod tags;
 
 /// Converts nucleotide to BAM u4 (for example `b'T'` -> `8`).
-fn nt_to_raw(nt: u8) -> Result<u8, Error> {
+fn nt_to_raw(nt: u8) -> Result<u8, String> {
     match nt {
         b'=' => Ok(0),
         b'A' => Ok(1),
@@ -29,7 +29,7 @@ fn nt_to_raw(nt: u8) -> Result<u8, Error> {
         b'D' => Ok(13),
         b'B' => Ok(14),
         b'N' => Ok(15),
-        _ => Err(Error::Corrupted(format!("Nucleotide not expected: {}", nt as char))),
+        _ => Err(format!("Nucleotide not expected: {}", nt as char)),
     }
 }
 
@@ -48,7 +48,7 @@ impl Sequence {
         }
     }
 
-    fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I) -> Result<(), Error> {
+    fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I) -> Result<(), String> {
         self.raw.clear();
         for (i, nt) in nucleotides.into_iter().enumerate() {
             if i % 2 == 0 {
@@ -191,6 +191,12 @@ impl Qualities {
     pub fn clear(&mut self) {
         self.raw.clear();
     }
+
+    /// Fills the qualities from raw qualities (without + 33).
+    fn fill_from_raw<I: IntoIterator<Item = u8>>(&mut self, qualities: I) {
+        self.raw.clear();
+        self.raw.extend(qualities);
+    }
 }
 
 pub const READ_PAIRED: u16 = 0x1;
@@ -224,6 +230,12 @@ pub enum Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Error {
         Error::Truncated(e)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(e: &str) -> Error {
+        Error::Corrupted(e.to_string())
     }
 }
 
@@ -361,37 +373,25 @@ impl Record {
                 })
             },
         };
-        self.ref_id = stream.read_i32::<LittleEndian>()?;
-        if self.ref_id < -1 {
-            return Err(self.corrupt("Reference id < -1"));
-        }
-        self.start = stream.read_i32::<LittleEndian>()?;
-        if self.start < -1 {
-            return Err(self.corrupt("Start < -1"));
-        }
-        *self.end.get_mut() = -1;
+        self.set_ref_id(stream.read_i32::<LittleEndian>()?)?;
+        self.set_start(stream.read_i32::<LittleEndian>()?)?;
         let name_len = stream.read_u8()?;
         if name_len == 0 {
             return Err(self.corrupt("Name length == 0"));
         }
-        self.mapq = stream.read_u8()?;
+
+        self.set_mapq(stream.read_u8()?);
         self.bin = stream.read_u16::<LittleEndian>()?;
         let cigar_len = stream.read_u16::<LittleEndian>()?;
-        self.flag = stream.read_u16::<LittleEndian>()?;
+        self.set_flag(stream.read_u16::<LittleEndian>()?);
         let qual_len = stream.read_i32::<LittleEndian>()?;
         if qual_len < 0 {
             return Err(self.corrupt("Negative sequence length"));
         }
         let qual_len = qual_len as usize;
-        self.next_ref_id = stream.read_i32::<LittleEndian>()?;
-        if self.next_ref_id < -1 {
-            return Err(self.corrupt("Next reference id < -1"));
-        }
-        self.next_start = stream.read_i32::<LittleEndian>()?;
-        if self.next_start < -1 {
-            return Err(self.corrupt("Next start < -1"));
-        }
-        self.template_len = stream.read_i32::<LittleEndian>()?;
+        self.set_next_ref_id(stream.read_i32::<LittleEndian>()?)?;
+        self.set_next_start(stream.read_i32::<LittleEndian>()?)?;
+        self.set_template_len(stream.read_i32::<LittleEndian>()?);
 
         unsafe {
             resize(&mut self.name, name_len as usize - 1);
@@ -579,6 +579,124 @@ impl Record {
         self.qual.write_readable(f)?;
         self.tags.write_sam(f)?;
         writeln!(f)
+    }
+
+    /// Sets record name.
+    pub fn set_name<T: IntoIterator<Item = u8>>(&mut self, name: T) {
+        self.name.clear();
+        self.name.extend(name);
+    }
+
+    pub fn set_flag(&mut self, flag: u16) {
+        self.flag = flag;
+    }
+
+    /// Sets reference id. It cannot be less than -1.
+    pub fn set_ref_id(&mut self, ref_id: i32) -> Result<(), &'static str> {
+        if ref_id < -1 {
+            Err("Reference id < -1")
+        } else {
+            self.ref_id = ref_id;
+            Ok(())
+        }
+    }
+
+    /// Sets record 0-based start. It cannot be less than -1.
+    ///
+    /// This function resets record `bin` and `end`, if they were already calculated.
+    pub fn set_start(&mut self, start: i32) -> Result<(), &'static str> {
+        if start < -1 {
+            Err("Start < -1")
+        } else {
+            self.start = start;
+            *self.end.get_mut() = -1;
+            self.bin = std::u16::MAX;
+            Ok(())
+        }
+    }
+
+    pub fn set_mapq(&mut self, mapq: u8) {
+        self.mapq = mapq;
+    }
+
+    /// Sets reference id of the mate record. It cannot be less than -1.
+    pub fn set_next_ref_id(&mut self, next_ref_id: i32) -> Result<(), &'static str> {
+        if next_ref_id < -1 {
+            Err("Next reference id < -1")
+        } else {
+            self.next_ref_id = next_ref_id;
+            Ok(())
+        }
+    }
+
+    /// Sets record 0-based start of the mate record. It cannot be less than -1.
+    pub fn set_next_start(&mut self, next_start: i32) -> Result<(), &'static str> {
+        if next_start < -1 {
+            Err("Next start < -1")
+        } else {
+            self.next_start = next_start;
+            Ok(())
+        }
+    }
+
+    pub fn set_template_len(&mut self, template_len: i32) {
+        self.template_len = template_len;
+    }
+
+    /// Sets a sequence for a record and removes record qualities.
+    /// Sequence should be in text format (for example `b"ACGT"`).
+    ///
+    /// The function returns an error if there was an unexpected nucleotide.
+    /// In that case the sequence and qualities are cleared.
+    pub fn set_seq<T: IntoIterator<Item = u8>>(&mut self, sequence: T) -> Result<(), String> {
+        if let Err(e) = self.seq.fill_from_text(sequence) {
+            self.seq.clear();
+            self.qual.clear();
+            return Err(e);
+        }
+        self.qual.fill_from_raw(std::iter::repeat(0xff_u8).take(self.seq.len()));
+        Ok(())
+    }
+
+    /// Sets a sequence and qualities for a record. If you do not need to set qualities, use
+    /// [seq_seq](#method.set_seq). Both iterators should have the same length.
+    ///
+    /// # Arguments
+    /// * sequence - in text format (for example `b"ACGT"`),
+    /// * qualities - in raw format (without +33 added).
+    ///
+    /// If the function returns an error, the sequence and qualities are cleared.
+    pub fn set_seq_qual<T, U>(&mut self, sequence: T, qualities: U) -> Result<(), String>
+    where T: IntoIterator<Item = u8>,
+          U: IntoIterator<Item = u8>,
+    {
+        if let Err(e) = self.seq.fill_from_text(sequence) {
+            self.seq.clear();
+            self.qual.clear();
+            return Err(e);
+        }
+        self.qual.fill_from_raw(qualities);
+        if self.seq.len() != self.qual.len() {
+            let err = Err(format!("Trying to set sequence and qualities of different lengths: \
+                {} and {}", self.seq.len(), self.qual.len()));
+            self.seq.clear();
+            self.qual.clear();
+            err
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Sets record cigar. End position is reset.
+    pub fn set_cigar<I: IntoIterator<Item = u8>>(&mut self, cigar: I) -> Result<(), String> {
+        *self.end.get_mut() = -1;
+        self.cigar.fill_from_text(cigar)
+    }
+
+    /// Sets raw record cigar. End position is reset.
+    pub fn set_raw_cigar<I: IntoIterator<Item = u32>>(&mut self, cigar: I) {
+        *self.end.get_mut() = -1;
+        self.cigar.fill_from_raw(cigar);
     }
 
     pub fn is_paired(&self) -> bool {

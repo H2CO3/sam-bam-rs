@@ -21,19 +21,19 @@ impl Operation {
     /// Convert `u8` symbol (for example `b'M'`) into [Operation](enum.Operation.html).
     ///
     /// To convert a number `0-8` into [Operation](enum.Operation.html) use `Operation::from(number)`.
-    pub fn from_symbol(symbol: u8) -> Operation {
+    pub fn from_symbol(symbol: u8) -> Result<Operation, String> {
         use Operation::*;
         match symbol {
-            b'M' => AlnMatch,
-            b'I' => Insertion,
-            b'D' => Deletion,
-            b'N' => Skip,
-            b'S' => Soft,
-            b'H' => Hard,
-            b'P' => Padding,
-            b'=' => SeqMatch,
-            b'X' => SeqMismatch,
-            _ => panic!("Unexpected cigar operation: {}", symbol as char),
+            b'M' => Ok(AlnMatch),
+            b'I' => Ok(Insertion),
+            b'D' => Ok(Deletion),
+            b'N' => Ok(Skip),
+            b'S' => Ok(Soft),
+            b'H' => Ok(Hard),
+            b'P' => Ok(Padding),
+            b'=' => Ok(SeqMatch),
+            b'X' => Ok(SeqMismatch),
+            _ => Err(format!("Unexpected cigar operation: {}", symbol as char)),
         }
     }
 
@@ -107,10 +107,29 @@ impl Cigar {
         self.0.clear();
     }
 
-    /// Fills the Cigar from raw data.
+    /// Fills Cigar from raw data.
     pub fn fill_from_raw<I: IntoIterator<Item = u32>>(&mut self, iter: I) {
         self.0.clear();
         self.0.extend(iter);
+    }
+
+    /// Fills Cigar from text. If the error occured, the cigar may be filled partly.
+    pub fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, text: I) -> Result<(), String> {
+        self.0.clear();
+        let mut op_len = 0_u32;
+        for symb in text {
+            if symb >= b'0' && symb <= b'9' {
+                op_len = 10 * op_len + (symb - b'0') as u32;
+            } else {
+                let op = Operation::from_symbol(symb)?;
+                if op_len == 0 {
+                    return Err("Operation length cannot be zero".to_string());
+                }
+                self.0.push(op_len << 4 | op as u32);
+                op_len = 0;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn fill_from<R: ReadBytesExt>(&mut self, stream: &mut R, len: usize)
