@@ -1,6 +1,7 @@
 use std::io::{Write, Read, Result, Error};
 use std::io::ErrorKind::InvalidData;
 use std::string::String;
+use std::collections::{hash_map, HashMap};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 
@@ -249,6 +250,7 @@ pub struct Header {
     lines: Vec<HeaderLine>,
     ref_names: Vec<String>,
     ref_lengths: Vec<u32>,
+    ref_ids: HashMap<String, u32>,
 }
 
 impl Header {
@@ -258,6 +260,7 @@ impl Header {
             lines: Vec::new(),
             ref_names: Vec::new(),
             ref_lengths: Vec::new(),
+            ref_ids: HashMap::new(),
         }
     }
 
@@ -267,7 +270,7 @@ impl Header {
     }
 
     /// Pushes a new header entry.
-    pub fn push_entry(&mut self, entry: HeaderEntry) {
+    pub fn push_entry(&mut self, entry: HeaderEntry) -> std::result::Result<(), String> {
         if entry.entry_type() == EntryType::RefSequence {
             let name = entry.get(b"SN")
                 .expect("@SQ header entry does not have a SN tag").to_string();
@@ -276,10 +279,16 @@ impl Header {
                 .parse()
                 .expect("@SQ header entry has a non-integer LN tag");
             assert!(len > 1, "Reference length must be positive");
-            self.ref_names.push(name);
+            match self.ref_ids.entry(name.clone()) {
+                hash_map::Entry::Occupied(_) =>
+                    return Err(format!("Reference {} appears twice in the reference", name)),
+                hash_map::Entry::Vacant(v) => v.insert(self.ref_names.len() as u32),
+            };
+            self.ref_names.push(name.clone());
             self.ref_lengths.push(len);
         }
         self.lines.push(HeaderLine::Entry(entry));
+        Ok(())
     }
 
     /// Pushes a new comment.
@@ -309,7 +318,8 @@ impl Header {
                     format!("Failed to parse comment line '{}'", line)))?;
             self.push_comment(comment.to_string());
         } else {
-            self.push_entry(HeaderEntry::parse_line(line)?);
+            self.push_entry(HeaderEntry::parse_line(line)?)
+                .map_err(|e| Error::new(InvalidData, e))?;
         }
         Ok(())
     }
@@ -405,5 +415,10 @@ impl Header {
         } else {
             Some(self.ref_lengths[ref_id])
         }
+    }
+
+    /// Returns reference id from its name, if possible.
+    pub fn reference_id(&self, ref_name: &str) -> Option<u32> {
+        self.ref_ids.get(ref_name).cloned()
     }
 }

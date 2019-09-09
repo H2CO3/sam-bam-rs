@@ -25,7 +25,7 @@ pub struct RegionViewer<'a, R: Read + Seek> {
 impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
-            if let Err(e) = record.fill_from(&mut self.chunks_reader) {
+            if let Err(e) = record.fill_from_bam(&mut self.chunks_reader) {
                 record.clear();
                 return Err(e);
             }
@@ -452,7 +452,7 @@ impl<R: Read> Reader<R> {
 
 impl<R: Read> RecordReader for Reader<R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
-        if let Err(e) = record.fill_from(&mut self.bgzip_reader) {
+        if let Err(e) = record.fill_from_bam(&mut self.bgzip_reader) {
             record.clear();
             Err(e)
         } else {
