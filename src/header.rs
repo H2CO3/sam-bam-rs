@@ -8,7 +8,7 @@ use byteorder::{ReadBytesExt, WriteBytesExt, LittleEndian};
 pub type TagName = [u8; 2];
 
 /// A single tag in a line.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Tag {
     name: TagName,
     value: String,
@@ -88,7 +88,7 @@ impl EntryType {
 /// using [push](#method.push), [remove](#method.remove) and others.
 ///
 /// However, be careful not to delete the required tag, as well as check the required tag format.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HeaderEntry {
     tags: Vec<Tag>,
     entry_type: EntryType,
@@ -273,12 +273,13 @@ impl Header {
     pub fn push_entry(&mut self, entry: HeaderEntry) -> std::result::Result<(), String> {
         if entry.entry_type() == EntryType::RefSequence {
             let name = entry.get(b"SN")
-                .expect("@SQ header entry does not have a SN tag").to_string();
+                .ok_or_else(|| "Header: @SQ entry does not have a SN tag".to_string())?.to_string();
             let len: u32 = entry.get(b"LN")
-                .expect("@SQ header entry does not have a LN tag")
-                .parse()
-                .expect("@SQ header entry has a non-integer LN tag");
-            assert!(len > 1, "Reference length must be positive");
+                .ok_or_else(|| "Header: @SQ entry does not have a LN tag".to_string())?
+                .parse().map_err(|_| "Header: @SQ entry has a non-integer LN tag".to_string())?;
+            if len <= 0 {
+                return Err("Reference length must be positive".to_string());
+            }
             match self.ref_ids.entry(name.clone()) {
                 hash_map::Entry::Occupied(_) =>
                     return Err(format!("Reference {} appears twice in the reference", name)),

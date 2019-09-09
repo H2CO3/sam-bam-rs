@@ -1,9 +1,10 @@
 use std::io::{Write, BufWriter, Result, BufReader, BufRead};
 use std::fs::File;
 use std::path::Path;
+use std::result;
 
 use super::header::Header;
-use super::record::Record;
+use super::record::{Record, Error};
 use super::{RecordReader, RecordWriter};
 
 /// Writes records in SAM format.
@@ -56,8 +57,6 @@ impl SamReader<BufReader<File>> {
     }
 }
 
-// TODO: Check empty SAM file.
-
 impl<R: BufRead> SamReader<R> {
     /// Opens SAM reader from a buffered stream.
     pub fn from_stream(mut stream: R) -> Result<Self> {
@@ -69,7 +68,7 @@ impl<R: BufRead> SamReader<R> {
                 break;
             };
             if buffer.starts_with('@') {
-                header.push_line(&buffer)?;
+                header.push_line(buffer.trim_end())?;
             } else {
                 break;
             }
@@ -80,5 +79,46 @@ impl<R: BufRead> SamReader<R> {
     /// Returns [header](../header/struct.Header.html).
     pub fn header(&self) -> &Header {
         &self.header
+    }
+}
+
+impl<R: BufRead> RecordReader for SamReader<R> {
+    fn read_into(&mut self, record: &mut Record) -> result::Result<(), Error> {
+        if self.buffer.is_empty() {
+            return Err(Error::NoMoreRecords);
+        }
+        let res = match record.fill_from_sam(self.buffer.trim(), &self.header) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                record.clear();
+                Err(e)
+            },
+        };
+        self.buffer.clear();
+        match self.stream.read_line(&mut self.buffer) {
+            Ok(_) => res,
+            Err(e) => res.or(Err(Error::Truncated(e))),
+        }
+    }
+}
+
+/// Iterator over records.
+///
+/// # Errors
+///
+/// If the record was corrupted, the function returns
+/// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+/// If the record was truncated or the reading failed for a different reason, the function
+/// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+impl<R: BufRead> Iterator for SamReader<R> {
+    type Item = result::Result<Record, Error>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut record = Record::new();
+        match self.read_into(&mut record) {
+            Ok(()) => Some(Ok(record)),
+            Err(Error::NoMoreRecords) => None,
+            Err(e) => Some(Err(e)),
+        }
     }
 }

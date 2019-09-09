@@ -1,4 +1,5 @@
 use std::io::{self, Read, Write};
+use std::io::ErrorKind::InvalidData;
 use std::mem;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -301,7 +302,7 @@ pub trait WriteValue: private::Sealed {
 impl WriteValue for char {
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
         if self.len_utf8() != 1 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            return Err(io::Error::new(InvalidData,
                 "Cannot write tag value: char value takes more than one byte"));
         }
         f.write_all(&[b'A', *self as u8])?;
@@ -344,7 +345,7 @@ write_value_prim!(f32, b'f', write_f32);
 impl WriteValue for &str {
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
         if self.bytes().any(|ch| ch == 0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            return Err(io::Error::new(InvalidData,
                 "Cannot write tag value: String contains null"));
         }
         f.write_u8(b'Z')?;
@@ -357,12 +358,11 @@ impl WriteValue for &str {
 impl<'a> WriteValue for Hex<'a> {
     fn write<W: Write>(&self, f: &mut W) -> io::Result<usize> {
         if self.0.len() % 2 != 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            return Err(io::Error::new(InvalidData,
                 "Cannot write tag value: Hex string contains an odd number of bytes"));
         }
         if self.0.iter().any(|&ch| ch == 0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                "Cannot write tag value: Hex contains null"));
+            return Err(io::Error::new(InvalidData, "Cannot write tag value: Hex contains null"));
         }
         f.write_u8(b'H')?;
         f.write_all(self.0)?;
@@ -616,6 +616,110 @@ impl TagViewer {
             value.write_sam(f)?;
         }
         Ok(())
+    }
+
+    /// Pushes integer in a smallest possible format.
+    pub fn push_int(&mut self, name: &TagName, value: i64) {
+        if value >= 0 {
+            if value < 0x100 {
+                self.push(name, value as u8).expect("Failed to push int tag");
+            } else if value < 0x10000 {
+                self.push(name, value as u16).expect("Failed to push int tag");
+            } else {
+                self.push(name, value as u32).expect("Failed to push int tag");
+            }
+        } else {
+            if value >= -0x80 {
+                self.push(name, value as i8).expect("Failed to push int tag");
+            } else if value >= -0x8000 {
+                self.push(name, value as i16).expect("Failed to push int tag");
+            } else {
+                self.push(name, value as i32).expect("Failed to push int tag");
+            }
+        }
+    }
+
+    /// Returns false if failed to parse.
+    fn push_sam_array(&mut self, name: &TagName, value: &str) -> bool {
+        let mut split = value.split(',');
+        let arr_type = match split.next() {
+            Some(v) => v,
+            None => return false,
+        };
+
+        match arr_type {
+            "c" => split.map(|s| s.parse::<i8>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[i8])).is_ok(),
+            "C" => split.map(|s| s.parse::<u8>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[u8])).is_ok(),
+            "s" => split.map(|s| s.parse::<i16>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[i16])).is_ok(),
+            "S" => split.map(|s| s.parse::<u16>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[u16])).is_ok(),
+            "i" => split.map(|s| s.parse::<i32>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[i32])).is_ok(),
+            "I" => split.map(|s| s.parse::<u32>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[u32])).is_ok(),
+            "f" => split.map(|s| s.parse::<f32>()).collect::<Result<Vec<_>, _>>()
+                .map(|values| self.push(name, &values as &[f32])).is_ok(),
+            _ => false,
+        }
+    }
+
+    /// Returns false if failed to parse.
+    fn inner_push_sam(&mut self, tag: &str) -> bool {
+        let tag_bytes = tag.as_bytes();
+        // 012345...
+        // nn:t:value
+        if tag_bytes.len() < 5 || tag_bytes[2] != b':' || tag_bytes[4] != b':' {
+            return true;
+        }
+        let tag_name = &[tag_bytes[0], tag_bytes[1]];
+        let tag_type = tag_bytes[3];
+        let tag_value = unsafe { std::str::from_utf8_unchecked(&tag_bytes[5..]) };
+
+        match tag_type {
+            b'A' => {
+                if tag_bytes.len() != 6 {
+                    return false;
+                }
+                self.push(tag_name, tag_bytes[5] as char).is_ok()
+            },
+            b'i' => {
+                let number: i64 = match tag_value.parse() {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                };
+                self.push_int(tag_name, number);
+                true
+            },
+            b'f' => {
+                let float: f32 = match tag_value.parse() {
+                    Ok(value) => value,
+                    Err(_) => return false,
+                };
+                self.push(tag_name, float).is_ok()
+            },
+            b'Z' => {
+                self.push(tag_name, tag_value).is_ok()
+            },
+            b'H' => {
+                self.push(tag_name, Hex(tag_value.as_bytes())).is_ok()
+            },
+            b'B' => {
+                self.push_sam_array(tag_name, tag_value)
+            },
+            _ => false,
+        }
+    }
+
+    /// Adds a new tag in SAM format (name:type:value).
+    pub fn push_sam(&mut self, tag: &str) -> io::Result<()> {
+        if self.inner_push_sam(tag) {
+            Ok(())
+        } else {
+            Err(io::Error::new(InvalidData, format!("Cannot parse tag '{}'", tag)))
+        }
     }
 }
 

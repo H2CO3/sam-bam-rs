@@ -50,13 +50,15 @@ impl Sequence {
 
     fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I) -> Result<(), String> {
         self.raw.clear();
-        for (i, nt) in nucleotides.into_iter().enumerate() {
-            if i % 2 == 0 {
+        self.len = 0;
+        for nt in nucleotides.into_iter() {
+            if self.len % 2 == 0 {
                 self.raw.push(nt_to_raw(nt)? << 4);
             } else {
-                self.raw[i / 2] |= nt_to_raw(nt)?;
+                self.raw[self.len / 2] |= nt_to_raw(nt)?;
             }
-        }
+            self.len += 1;
+        };
         Ok(())
     }
 
@@ -129,6 +131,7 @@ impl Sequence {
     /// Clears the contents but does not touch capacity.
     pub fn clear(&mut self) {
         self.raw.clear();
+        self.len = 0;
     }
 }
 
@@ -475,18 +478,25 @@ impl Record {
 
         let template_len = split.try_next("template length (TLEN)")?;
         let template_len = template_len.parse::<i32>().map_err(|_|
-            self.corrupt(format!("Cannot convert TLEN '{}' to int", template_len)))? - 1;
+            self.corrupt(format!("Cannot convert TLEN '{}' to int", template_len)))?;
         self.set_template_len(template_len);
 
         let seq = split.try_next("sequence")?;
         let qual = split.try_next("qualities")?;
-        if qual == "*" {
+        if seq == "*" {
+            self.reset_seq();
+        } else if qual == "*" {
             self.set_seq(seq.bytes()).map_err(|e| self.corrupt(e))?;
         } else {
-            self.set_seq_qual(seq.bytes(), qual.bytes()).map_err(|e| self.corrupt(e))?;
+            self.set_seq_qual(seq.bytes(), qual.bytes().map(|q| q - 33))
+                .map_err(|e| self.corrupt(e))?;
         }
 
-        unimplemented!();
+        self.tags.clear();
+        for tag in split {
+            self.tags.push_sam(tag)?;
+        }
+        Ok(())
     }
 
     /// Replace Cigar by CG tag if Cigar has placeholder *kSmN*.
@@ -715,6 +725,12 @@ impl Record {
 
     pub fn set_template_len(&mut self, template_len: i32) {
         self.template_len = template_len;
+    }
+
+    /// Sets empty sequence and qualities.
+    pub fn reset_seq(&mut self) {
+        self.seq.clear();
+        self.qual.clear();
     }
 
     /// Sets a sequence for a record and removes record qualities.
