@@ -449,7 +449,7 @@ fn tag_type_size(ty: u8) -> Result<u32, Error> {
         b'c' | b'C' | b'A' => Ok(1),
         b's' | b'S' => Ok(2),
         b'i' | b'I' | b'f' => Ok(4),
-        _ => Err(Error::Corrupted("Unexpected tag type")),
+        _ => Err(Error::Corrupted(format!("Unexpected tag type: {}", ty as char))),
     }
 }
 
@@ -458,7 +458,7 @@ fn tag_type_size(ty: u8) -> Result<u32, Error> {
 /// For example, the function would return 7 for the raw representation of `"AA:i:10    BB:i:20"`.
 fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
     if raw_tags.len() < 4 {
-        return Err(Error::Corrupted("Truncated tags"));
+        return Err(Error::Corrupted("Truncated tags".to_string()));
     }
     let ty = raw_tags[2];
     match ty {
@@ -466,16 +466,17 @@ fn get_length(raw_tags: &[u8]) -> Result<u32, Error> {
             for i in 3..raw_tags.len() {
                 if raw_tags[i] == 0 {
                     if ty == b'H' && i % 2 != 0 {
-                        return Err(Error::Corrupted("Hex tag has an odd number of bytes"));
+                        return Err(Error::Corrupted(
+                            "Hex tag has an odd number of bytes".to_string()));
                     }
                     return Ok(1 + i as u32);
                 }
             }
-            Err(Error::Corrupted("Truncated tags"))
+            Err(Error::Corrupted("Truncated tags".to_string()))
         },
         b'B' => {
             if raw_tags.len() < 8 {
-                return Err(Error::Corrupted("Truncated tags"));
+                return Err(Error::Corrupted("Truncated tags".to_string()));
             }
             let arr_len = (&raw_tags[4..8]).read_i32::<LittleEndian>()? as u32;
             Ok(8 + tag_type_size(raw_tags[3])? * arr_len)
@@ -514,10 +515,16 @@ impl TagViewer {
             sum_len += tag_len as usize;
         }
         if sum_len > self.raw.len() {
-            Err(Error::Corrupted("Truncated tags"))
+            Err(Error::Corrupted("Truncated tags".to_string()))
         } else {
             Ok(())
         }
+    }
+
+    /// Clears the contents but does not touch capacity.
+    pub fn clear(&mut self) {
+        self.lengths.clear();
+        self.raw.clear();
     }
 
     /// Returns a value of a tag with `name`. Value integer/float types, returns copied value, for

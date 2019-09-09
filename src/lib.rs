@@ -96,7 +96,6 @@ pub mod sam;
 
 pub use bam_reader::IndexedReader;
 pub use bam_reader::Reader;
-pub use bam_reader::RecordReader;
 
 pub use header::Header;
 
@@ -105,3 +104,51 @@ pub use record::Error;
 
 pub use sam::SamWriter;
 pub use sam::SamReader;
+
+
+/// A trait for reading BAM/SAM records.
+///
+/// You can use the single record:
+/// ```rust
+///let mut record = bam::Record::new();
+///loop {
+///    // reader: impl RecordReader
+///    match reader.read_into(&mut record) {
+///    // New record is saved into record
+///        Ok(()) => {},
+///        // NoMoreRecords represents stop iteration
+///        Err(bam::Error::NoMoreRecords) => break,
+///        Err(e) => panic!("{}", e),
+///    }
+///    // Do somethind with the record
+///}
+///```
+/// Or you can just iterate over records:
+/// ```rust
+///for record in reader {
+///    let record = record.unwrap();
+///    // Do somethind with the record
+///}
+///```
+pub trait RecordReader: Iterator<Item = Result<Record, Error>> {
+    /// Writes the next record into `record`. It allows to skip excessive memory allocation.
+    ///
+    /// # Errors
+    ///
+    /// If there are no more records to iterate over, the function returns
+    /// [NoMoreRecords](../record/enum.Error.html#variant.NoMoreRecords) error.
+    ///
+    /// If the record was corrupted, the function returns
+    /// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+    /// If the record was truncated or the reading failed for a different reason, the function
+    /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+    ///
+    /// If the function returns an error, the record is supposed to be cleared.
+    fn read_into(&mut self, record: &mut Record) -> Result<(), Error>;
+}
+
+/// A trait for writing BAM/SAM records.
+pub trait RecordWriter {
+    /// Writes a single record.
+    fn write(&mut self, record: &Record) -> std::io::Result<()>;
+}

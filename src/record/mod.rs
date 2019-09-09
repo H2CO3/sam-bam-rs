@@ -10,6 +10,29 @@ use super::header::Header;
 
 pub mod tags;
 
+/// Converts nucleotide to BAM u4 (for example `b'T'` -> `8`).
+fn nt_to_raw(nt: u8) -> Result<u8, Error> {
+    match nt {
+        b'=' => Ok(0),
+        b'A' => Ok(1),
+        b'C' => Ok(2),
+        b'M' => Ok(3),
+        b'G' => Ok(4),
+        b'R' => Ok(5),
+        b'S' => Ok(6),
+        b'V' => Ok(7),
+        b'T' => Ok(8),
+        b'W' => Ok(9),
+        b'Y' => Ok(10),
+        b'H' => Ok(11),
+        b'K' => Ok(12),
+        b'D' => Ok(13),
+        b'B' => Ok(14),
+        b'N' => Ok(15),
+        _ => Err(Error::Corrupted(format!("Nucleotide not expected: {}", nt as char))),
+    }
+}
+
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
 pub struct Sequence {
@@ -23,6 +46,18 @@ impl Sequence {
             raw: Vec::new(),
             len: 0,
         }
+    }
+
+    fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I) -> Result<(), Error> {
+        self.raw.clear();
+        for (i, nt) in nucleotides.into_iter().enumerate() {
+            if i % 2 == 0 {
+                self.raw.push(nt_to_raw(nt)? << 4);
+            } else {
+                self.raw[i / 2] |= nt_to_raw(nt)?;
+            }
+        }
+        Ok(())
     }
 
     fn fill_from<R: Read>(&mut self, stream: &mut R, expanded_len: usize) -> io::Result<()> {
@@ -90,6 +125,11 @@ impl Sequence {
         }
         write_iterator(f, (0..self.len).map(|i| self.at(i)))
     }
+
+    /// Clears the contents but does not touch capacity.
+    pub fn clear(&mut self) {
+        self.raw.clear();
+    }
 }
 
 /// Wrapper around qualities.
@@ -146,6 +186,11 @@ impl Qualities {
         }
         write_iterator(f, self.raw.iter().map(|qual| qual + 33))
     }
+
+    /// Clears the contents but does not touch capacity.
+    pub fn clear(&mut self) {
+        self.raw.clear();
+    }
 }
 
 pub const READ_PAIRED: u16 = 0x1;
@@ -172,7 +217,7 @@ pub const SUPPLEMENTARY: u16 = 0x800;
 /// `e` contains the causing error.
 pub enum Error {
     NoMoreRecords,
-    Corrupted(&'static str),
+    Corrupted(String),
     Truncated(io::Error),
 }
 
@@ -270,12 +315,41 @@ impl Record {
         }
     }
 
+    /// Clears the record.
+    pub fn clear(&mut self) {
+        self.ref_id = -1;
+        self.next_ref_id = -1;
+        self.start = -1;
+        *self.end.get_mut() = -1;
+        self.next_start = -1;
+        self.bin = 0;
+        self.mapq = 0;
+        self.flag = 0;
+        self.template_len = 0;
+
+        self.name.clear();
+        self.cigar.clear();
+        self.seq.clear();
+        self.qual.clear();
+        self.tags.clear();
+    }
+
+    fn corrupt(&mut self, text: &str) -> Error {
+        if self.name.is_empty() {
+            Error::Corrupted(format!("Record {}: {}",
+                std::str::from_utf8(&self.name).unwrap_or("_"), text))
+        } else {
+            Error::Corrupted(text.to_string())
+        }
+    }
+
     /// Fills the record from a `stream` of uncompressed BAM contents.
     pub(crate) fn fill_from<R: Read>(&mut self, stream: &mut R) -> Result<(), Error> {
+        self.name.clear();
         let block_size = match stream.read_i32::<LittleEndian>() {
             Ok(value) => {
                 if value < 0 {
-                    return Err(Error::Corrupted("Negative block size"));
+                    return Err(self.corrupt("Negative block size"));
                 }
                 value as usize
             },
@@ -289,16 +363,16 @@ impl Record {
         };
         self.ref_id = stream.read_i32::<LittleEndian>()?;
         if self.ref_id < -1 {
-            return Err(Error::Corrupted("Reference id < -1"));
+            return Err(self.corrupt("Reference id < -1"));
         }
         self.start = stream.read_i32::<LittleEndian>()?;
         if self.start < -1 {
-            return Err(Error::Corrupted("Start < -1"));
+            return Err(self.corrupt("Start < -1"));
         }
         *self.end.get_mut() = -1;
         let name_len = stream.read_u8()?;
         if name_len == 0 {
-            return Err(Error::Corrupted("Name length == 0"));
+            return Err(self.corrupt("Name length == 0"));
         }
         self.mapq = stream.read_u8()?;
         self.bin = stream.read_u16::<LittleEndian>()?;
@@ -306,16 +380,16 @@ impl Record {
         self.flag = stream.read_u16::<LittleEndian>()?;
         let qual_len = stream.read_i32::<LittleEndian>()?;
         if qual_len < 0 {
-            return Err(Error::Corrupted("Negative sequence length"));
+            return Err(self.corrupt("Negative sequence length"));
         }
         let qual_len = qual_len as usize;
         self.next_ref_id = stream.read_i32::<LittleEndian>()?;
         if self.next_ref_id < -1 {
-            return Err(Error::Corrupted("Next reference id < -1"));
+            return Err(self.corrupt("Next reference id < -1"));
         }
         self.next_start = stream.read_i32::<LittleEndian>()?;
         if self.next_start < -1 {
-            return Err(Error::Corrupted("Next start < -1"));
+            return Err(self.corrupt("Next start < -1"));
         }
         self.template_len = stream.read_i32::<LittleEndian>()?;
 
@@ -336,7 +410,7 @@ impl Record {
         self.replace_cigar_if_needed()?;
 
         if self.is_mapped() == (self.ref_id == -1) {
-            return Err(Error::Corrupted("Record (flag & 0x4) and ref_id do not match"));
+            return Err(self.corrupt("Record (flag & 0x4) and ref_id do not match"));
         }
 
         Ok(())
@@ -347,25 +421,24 @@ impl Record {
         if self.cigar.len() > 0 && self.cigar.at(0) ==
                 (self.seq.len as u32, cigar::Operation::Soft) {
             if self.cigar.len() != 2 {
-                return Err(Error::Corrupted("Record contains invalid Cigar"));
+                return Err(self.corrupt("Record contains invalid Cigar"));
             }
             let (len, op) = self.cigar.at(1);
             if op != cigar::Operation::Skip {
-                return Err(Error::Corrupted("Record contains invalid Cigar"));
+                return Err(self.corrupt("Record contains invalid Cigar"));
             }
             *self.end.get_mut() = self.start + len as i32;
 
             let cigar_arr = match self.tags.get(b"CG") {
                 Some(tags::TagValue::IntArray(array_view)) => {
                     if array_view.int_type() != tags::IntegerType::U32 {
-                        return Err(Error::Corrupted("CG tag has an incorrect type"));
+                        return Err(self.corrupt("CG tag has an incorrect type"));
                     }
                     array_view
                 },
-                _ => return Err(Error::Corrupted("Record should contain tag CG, but does not")),
+                _ => return Err(self.corrupt("Record should contain tag CG, but does not")),
             };
-            self.cigar.0.clear();
-            self.cigar.0.extend(cigar_arr.iter().map(|el| el as u32));
+            self.cigar.fill_from_raw(cigar_arr.iter().map(|el| el as u32));
         }
         Ok(())
     }

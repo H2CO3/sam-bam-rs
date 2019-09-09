@@ -8,45 +8,7 @@ use super::index::{self, Index};
 use super::record;
 use super::bgzip;
 use super::header::Header;
-
-/// Iterator over bam records.
-///
-/// You can use the single record:
-/// ```rust
-///let mut record = bam::Record::new();
-///loop {
-///    // reader: impl RecordReader
-///    match reader.read_into(&mut record) {
-///    // New record is saved into record
-///        Ok(()) => {},
-///        // NoMoreRecords represents stop iteration
-///        Err(bam::Error::NoMoreRecords) => break,
-///        Err(e) => panic!("{}", e),
-///    }
-///    // Do somethind with the record
-///}
-///```
-/// Or you can just iterate over records:
-/// ```rust
-///for record in reader {
-///    let record = record.unwrap();
-///    // Do somethind with the record
-///}
-///```
-pub trait RecordReader: Iterator<Item = result::Result<record::Record, record::Error>> {
-    /// Writes the next record into `record`. It allows to skip excessive memory allocation.
-    ///
-    /// # Errors
-    ///
-    /// If there are no more records to iterate over, the function returns
-    /// [NoMoreRecords](../record/enum.Error.html#variant.NoMoreRecords) error.
-    ///
-    /// If the record was corrupted, the function returns
-    /// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
-    /// If the record was truncated or the reading failed for a different reason, the function
-    /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
-    fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error>;
-}
+use super::RecordReader;
 
 /// Iterator over records in a specific region. Implements [RecordReader](trait.RecordReader.html) trait.
 ///
@@ -63,20 +25,25 @@ pub struct RegionViewer<'a, R: Read + Seek> {
 impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         loop {
-            record.fill_from(&mut self.chunks_reader)?;
+            if let Err(e) = record.fill_from(&mut self.chunks_reader) {
+                record.clear();
+                return Err(e);
+            }
             if !record.is_mapped() {
                 continue;
             }
             // Reads are sorted, so no more reads would be in the region.
             if record.start() >= self.end {
+                record.clear();
                 return Err(record::Error::NoMoreRecords);
             }
             if !(self.predicate)(&record) {
                 continue;
             }
             if record.bin() > index::MAX_BIN {
+                record.clear();
                 return Err(record::Error::Corrupted(
-                    "Read has BAI bin bigger than max possible value"));
+                    "Read has BAI bin bigger than max possible value".to_string()));
             }
             let (min_start, max_end) = index::bin_to_region(record.bin());
             if min_start >= self.start && max_end <= self.end {
@@ -85,7 +52,8 @@ impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
 
             let record_end = record.calculate_end();
             if record_end != -1 && record_end < record.start() {
-                return Err(record::Error::Corrupted("aln_end < aln_start"));
+                record.clear();
+                return Err(record::Error::Corrupted("aln_end < aln_start".to_string()));
             }
             if record_end > self.start {
                 return Ok(());
@@ -484,7 +452,12 @@ impl<R: Read> Reader<R> {
 
 impl<R: Read> RecordReader for Reader<R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
-        record.fill_from(&mut self.bgzip_reader)
+        if let Err(e) = record.fill_from(&mut self.bgzip_reader) {
+            record.clear();
+            Err(e)
+        } else {
+            Ok(())
+        }
     }
 }
 

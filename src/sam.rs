@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::header::Header;
 use super::record::Record;
-use super::RecordReader;
+use super::{RecordReader, RecordWriter};
 
 /// Writes records in SAM format.
 pub struct SamWriter<W: Write> {
@@ -32,9 +32,11 @@ impl<W: Write> SamWriter<W> {
     pub fn header(&self) -> &Header {
         &self.header
     }
+}
 
+impl<W: Write> RecordWriter for SamWriter<W> {
     /// Writes a single record in SAM format.
-    pub fn write(&mut self, record: &Record) -> Result<()> {
+    fn write(&mut self, record: &Record) -> Result<()> {
         record.write_sam(&mut self.stream, &self.header)
     }
 }

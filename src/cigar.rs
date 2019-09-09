@@ -102,6 +102,17 @@ impl Cigar {
         Cigar(Vec::new())
     }
 
+    /// Clears the contents but does not touch capacity.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    /// Fills the Cigar from raw data.
+    pub fn fill_from_raw<I: IntoIterator<Item = u32>>(&mut self, iter: I) {
+        self.0.clear();
+        self.0.extend(iter);
+    }
+
     pub(crate) fn fill_from<R: ReadBytesExt>(&mut self, stream: &mut R, len: usize)
             -> io::Result<()> {
         unsafe {
