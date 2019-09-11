@@ -75,6 +75,7 @@
 
 extern crate byteorder;
 extern crate inflate;
+extern crate miniz_oxide;
 extern crate lru_cache;
 #[cfg(feature = "check_crc")]
 extern crate crc;

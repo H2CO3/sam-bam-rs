@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::path::Path;
 use std::cmp::min;
@@ -7,6 +7,7 @@ use std::fmt::{self, Display, Debug, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use lru_cache::LruCache;
+use miniz_oxide::inflate::stream as miniz_inflate;
 
 use super::index::{Chunk, VirtualOffset};
 
@@ -15,13 +16,6 @@ pub const MAX_BLOCK_SIZE: usize = 65536;
 
 fn as_u16(buffer: &[u8], start: usize) -> u16 {
     buffer[start] as u16 + ((buffer[start + 1] as u16) << 8)
-}
-
-/// BGzip block. Both uncompressed and compressed size should not be bigger than
-/// `MAX_BLOCK_SIZE = 65536`.
-pub struct Block {
-    block_size: usize,
-    contents: Vec<u8>,
 }
 
 /// io::Error produced while reading a bgzip block.
@@ -78,12 +72,21 @@ impl Debug for BlockError {
     }
 }
 
+/// BGzip block. Both uncompressed and compressed size should not be bigger than
+/// `MAX_BLOCK_SIZE = 65536`.
+pub struct Block {
+    block_size: usize,
+    contents_size: usize,
+    contents: Vec<u8>,
+}
+
 impl Block {
     #[doc(hidden)]
     pub fn new() -> Block {
         Block {
             block_size: 0,
-            contents: Vec::with_capacity(MAX_BLOCK_SIZE),
+            contents_size: 0,
+            contents: vec![0; MAX_BLOCK_SIZE],
         }
     }
 
@@ -119,15 +122,23 @@ impl Block {
         };
 
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])?;
-        self.contents.clear();
-        let mut decoder = inflate::InflateWriter::new(&mut self.contents);
-        decoder.write(&reading_buffer[12 + extra_length..block_size - 8])
-            .map_err(|e| BlockError::Corrupted(
-                format!("Could not decompress block contents: {}", e)))?;
-        decoder.finish()
-            .map_err(|e| BlockError::Corrupted(
-                format!("Could not decompress block contents: {}", e)))?;
-        let obs_contents_size = self.contents.len();
+        let inflate_result = miniz_inflate::inflate(
+            &mut miniz_inflate::InflateState::new(miniz_oxide::DataFormat::Raw),
+            &reading_buffer[12 + extra_length..block_size - 8],
+            &mut self.contents, miniz_oxide::MZFlush::Finish);
+        match inflate_result.status {
+            Err(e) => return Err(BlockError::Corrupted(
+                format!("Could not decompress block contents: {:?}", e))),
+            Ok(miniz_oxide::MZStatus::StreamEnd) => {},
+            Ok(o) => return Err(BlockError::Corrupted(
+                format!("Could not decompress block contents: {:?}", o))),
+        }
+        if inflate_result.bytes_consumed != block_size - 20 - extra_length {
+            return Err(BlockError::Corrupted(
+                format!("Could not decompress block contents: decompressed {} bytes instead of {}",
+                inflate_result.bytes_consumed, block_size - 20 - extra_length)));
+        }
+        self.contents_size = inflate_result.bytes_written;
 
         let _exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()?;
@@ -139,18 +150,17 @@ impl Block {
         }
 
         #[cfg(feature = "check_crc")] {
-            let obs_crc32 = crc::crc32::checksum_ieee(&self.contents);
+            let obs_crc32 = crc::crc32::checksum_ieee(&self.contents[..self.contents_size]);
             if obs_crc32 != _exp_crc32 {
                 return Err(BlockError::Corrupted(
                     format!("CRC do not match: expected {}, observed {}", _exp_crc32, obs_crc32)));
             }
         }
-        if exp_contents_size as usize != obs_contents_size {
+        if exp_contents_size as usize != self.contents_size {
             return Err(BlockError::Corrupted(
                 format!("Uncompressed sizes do not match: expected {}, observed {}",
-                exp_contents_size, obs_contents_size)));
+                exp_contents_size, self.contents_size)));
         }
-        debug_assert!(obs_contents_size == self.contents.len());
         self.block_size = block_size;
 
         Ok(())
@@ -191,12 +201,12 @@ impl Block {
 
     /// Return the uncompressed contents.
     pub fn contents(&self) -> &[u8] {
-        &self.contents
+        &self.contents[..self.contents_size]
     }
 
     /// Return the size of the uncompressed data (same as `contents().len()`)
     pub fn contents_size(&self) -> usize {
-        self.contents.len()
+        self.contents_size
     }
 
     /// Return the block size (size of the compressed data).
