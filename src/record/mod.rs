@@ -1,12 +1,13 @@
 use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::fmt::{self, Display, Debug, Formatter};
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::cigar::{self, Cigar};
 use super::header::Header;
+use super::index;
 
 pub mod tags;
 
@@ -305,9 +306,9 @@ pub struct Record {
     ref_id: i32,
     next_ref_id: i32,
     start: i32,
-    end: RefCell<i32>,
+    end: Cell<i32>,
     next_start: i32,
-    bin: u16,
+    bin: Cell<u16>,
     mapq: u8,
     flag: u16,
     template_len: i32,
@@ -319,6 +320,8 @@ pub struct Record {
     tags: tags::TagViewer,
 }
 
+const BIN_UNKNOWN: u16 = std::u16::MAX;
+
 impl Record {
     /// Creates an empty record. Can be filled using
     /// [read_into](../bam_reader/struct.RegionViewer.html#method.read_into).
@@ -327,9 +330,9 @@ impl Record {
             ref_id: -1,
             next_ref_id: -1,
             start: -1,
-            end: RefCell::new(-1),
+            end: Cell::new(0),
             next_start: -1,
-            bin: 0,
+            bin: Cell::new(BIN_UNKNOWN),
             mapq: 0,
             flag: 0,
             template_len: 0,
@@ -347,9 +350,9 @@ impl Record {
         self.ref_id = -1;
         self.next_ref_id = -1;
         self.start = -1;
-        *self.end.get_mut() = -1;
+        self.end.set(0);
         self.next_start = -1;
-        self.bin = 0;
+        self.bin.set(BIN_UNKNOWN);
         self.mapq = 0;
         self.flag = 0;
         self.template_len = 0;
@@ -389,6 +392,7 @@ impl Record {
             },
         };
         self.set_ref_id(stream.read_i32::<LittleEndian>()?)?;
+        self.end.set(0);
         self.set_start(stream.read_i32::<LittleEndian>()?)?;
         let name_len = stream.read_u8()?;
         if name_len == 0 {
@@ -396,7 +400,7 @@ impl Record {
         }
 
         self.set_mapq(stream.read_u8()?);
-        self.bin = stream.read_u16::<LittleEndian>()?;
+        self.bin.set(stream.read_u16::<LittleEndian>()?);
         let cigar_len = stream.read_u16::<LittleEndian>()?;
         self.set_flag(stream.read_u16::<LittleEndian>()?);
         let qual_len = stream.read_i32::<LittleEndian>()?;
@@ -510,7 +514,7 @@ impl Record {
             if op != cigar::Operation::Skip {
                 return Err(self.corrupt("Record contains invalid Cigar".to_string()));
             }
-            *self.end.get_mut() = self.start + len as i32;
+            self.end.set(self.start + len as i32);
 
             let cigar_arr = match self.tags.get(b"CG") {
                 Some(tags::TagValue::IntArray(array_view)) => {
@@ -578,25 +582,35 @@ impl Record {
     /// Consecutive calculations take O(1).
     /// If the read was fetched from a specific region, it should have `end` already calculated.
     ///
-    /// Returns -1 for unmapped records.
+    /// Returns 0 for unmapped records.
     pub fn calculate_end(&self) -> i32 {
         if self.cigar.len() == 0 {
-            return -1;
+            return 0;
         }
 
-        let end = *self.end.borrow();
-        if end != -1 {
+        let end = self.end.get();
+        if end != 0 {
             return end;
         }
 
         let end = self.start + self.cigar.calculate_aligned_len() as i32;
-        *self.end.borrow_mut() = end;
+        self.end.set(end);
         end
     }
 
-    /// Returns BAI bin.
-    pub fn bin(&self) -> u16 {
-        self.bin
+    /// Returns BAI bin. If the bin is unknown and the end has not been calculated,
+    /// the bin will be calculated in `O(n_cigar)`, otherwise `O(1)`.
+    ///
+    /// Returns 4680 for unmapped reads.
+    pub fn calculate_bin(&self) -> u16 {
+        let bin = self.bin.get();
+        if bin != BIN_UNKNOWN {
+            return bin;
+        }
+        let end = self.calculate_end();
+        let bin = index::region_to_bin(self.start, end) as u16;
+        self.bin.set(bin);
+        bin
     }
 
     /// Returns record MAPQ.
@@ -687,14 +701,17 @@ impl Record {
 
     /// Sets record 0-based start. It cannot be less than -1.
     ///
-    /// This function resets record `bin` and `end`, if they were already calculated.
+    /// If the end position was already calculated, it is updated.
     pub fn set_start(&mut self, start: i32) -> Result<(), &'static str> {
         if start < -1 {
             Err("Start < -1")
         } else {
+            let difference = start - self.start;
             self.start = start;
-            *self.end.get_mut() = -1;
-            self.bin = std::u16::MAX;
+            if self.end.get() != 0 {
+                *self.end.get_mut() += difference;
+            }
+            self.bin.set(BIN_UNKNOWN);
             Ok(())
         }
     }
@@ -777,15 +794,17 @@ impl Record {
         }
     }
 
-    /// Sets record cigar. End position is reset.
+    /// Sets record cigar. This resets end position and BAI bin.
     pub fn set_cigar<I: IntoIterator<Item = u8>>(&mut self, cigar: I) -> Result<(), String> {
-        *self.end.get_mut() = -1;
+        self.end.set(0);
+        self.bin.set(BIN_UNKNOWN);
         self.cigar.fill_from_text(cigar)
     }
 
-    /// Sets raw record cigar. End position is reset.
+    /// Sets raw record cigar. This resets end position and BAI bin.
     pub fn set_raw_cigar<I: IntoIterator<Item = u32>>(&mut self, cigar: I) {
-        *self.end.get_mut() = -1;
+        self.end.set(0);
+        self.bin.set(BIN_UNKNOWN);
         self.cigar.fill_from_raw(cigar);
     }
 
