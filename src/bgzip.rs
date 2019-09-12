@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::io::ErrorKind::{InvalidData, UnexpectedEof};
+use std::io::ErrorKind;
 use std::path::Path;
 use std::cmp::min;
 use std::fmt::{self, Display, Debug, Formatter};
@@ -9,6 +9,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use lru_cache::LruCache;
 use miniz_oxide::inflate::stream as miniz_inflate;
 use miniz_oxide::deflate;
+use crc::{crc32, Hasher32};
 
 use super::index::{Chunk, VirtualOffset};
 
@@ -44,8 +45,10 @@ impl Into<io::Error> for BlockError {
     fn into(self) -> io::Error {
         use BlockError::*;
         match self {
-            EndOfFile => io::Error::new(UnexpectedEof, "EOF: Failed to read bgzip block"),
-            Corrupted(s) => io::Error::new(InvalidData, format!("Corrupted bgzip block: {}", s)),
+            EndOfFile => io::Error::new(ErrorKind::UnexpectedEof,
+                "EOF: Failed to read bgzip block"),
+            Corrupted(s) => io::Error::new(ErrorKind::InvalidData,
+                format!("Corrupted bgzip block: {}", s)),
             IoError(e) => e,
         }
     }
@@ -106,7 +109,7 @@ impl Block {
             match stream.read_exact(header) {
                 Ok(()) => {},
                 Err(e) => {
-                    if e.kind() == UnexpectedEof {
+                    if e.kind() == ErrorKind::UnexpectedEof {
                         return Err(BlockError::EndOfFile);
                     } else {
                         return Err(BlockError::from(e));
@@ -150,7 +153,7 @@ impl Block {
         #[cfg(feature = "check_crc")] {
             let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
                 .read_u32::<LittleEndian>()?;
-            let obs_crc32 = crc::crc32::checksum_ieee(&self.contents[..self.contents_size]);
+            let obs_crc32 = crc32::checksum_ieee(&self.contents[..self.contents_size]);
             if obs_crc32 != exp_crc32 {
                 return Err(BlockError::Corrupted(
                     format!("CRC do not match: expected {}, observed {}", exp_crc32, obs_crc32)));
@@ -162,7 +165,6 @@ impl Block {
                 exp_contents_size, self.contents_size)));
         }
         self.block_size = block_size;
-
         Ok(())
     }
 
@@ -470,7 +472,7 @@ impl<R: Read> Read for ConsecutiveReader<R> {
                     if self.previous_empty {
                         return Ok(0);
                     } else {
-                        return Err(io::Error::new(InvalidData, "BAM file truncated!"));
+                        return Err(io::Error::new(ErrorKind::InvalidData, "BAM file truncated!"));
                     }
                 },
                 Err(e) => return Err(e.into()),
@@ -495,7 +497,7 @@ const COMPRESSED_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - 26;
 pub struct Writer<W: Write> {
     stream: W,
     compressed_buffer: Vec<u8>,
-    level: i32,
+    compressor: deflate::core::CompressorOxide,
 }
 
 impl Writer<File> {
@@ -511,61 +513,72 @@ impl<W: Write> Writer<W> {
     /// Opens a bgzip writer from a stream and compression level. Maximal compression level is 10.
     pub fn from_stream(stream: W, level: u8) -> Self {
         assert!(level <= 10, "Compression level should be at most 10");
+        let mut compressor = deflate::core::CompressorOxide::new(0);
+        compressor.set_format_and_level(miniz_oxide::DataFormat::Raw, level);
         Writer {
             stream,
-            compressed_buffer: vec![0; COMPRESSED_BLOCK_SIZE],
-            level: level as i32,
+            compressed_buffer: vec![0; COMPRESSED_BLOCK_SIZE + 1],
+            compressor,
         }
     }
 
-    /// Writes an empty block. Returns the number of written bytes = 28.
-    pub fn write_empty(&mut self) -> io::Result<usize> {
+    /// Writes an empty block.
+    pub fn write_empty(&mut self) -> io::Result<()> {
         const EMPTY_BLOCK: &[u8; 28] = &[0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
             0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00];
         self.stream.write_all(EMPTY_BLOCK)?;
-        Ok(28)
+        Ok(())
     }
 
-    /// Compresses the `contents` and writes a block (or several blocks if compressed size is
-    /// too big). Input `contents` should take at most `MAX_BLOCK_SIZE = 65536` bytes.
-    /// Returns the number of written bytes.
-    pub fn write(&mut self, contents: &[u8]) -> io::Result<usize> {
-        if contents.is_empty() {
+    /// Compresses all slices in the `contents` and writes as a single block.
+    ///
+    /// Sum length of the `contents` should be at most `MAX_BLOCK_SIZE = 65536`.
+    ///
+    /// If the compressed block is bigger than `MAX_BLOCK_SIZE`, the function returns an error
+    /// `WriteZero`.
+    pub fn write_several(&mut self, contents: &[&[u8]]) -> io::Result<()> {
+        let contents_size: usize = contents.iter().map(|slice| slice.len()).sum();
+        if contents_size == 0 {
             return self.write_empty();
         }
-        if contents.len() > MAX_BLOCK_SIZE {
-            panic!("Cannot write a block: uncompressed size {} > {}", contents.len(),
+        if contents_size > MAX_BLOCK_SIZE {
+            panic!("Cannot write a block: uncompressed size {} > {}", contents_size,
                 MAX_BLOCK_SIZE);
         }
 
-        // Level, window_bits = 0 - raw deflate, strategy = 0
-        let flags = deflate::core::create_comp_flags_from_zip_params(self.level, 0, 0);
-        let mut compressor = deflate::core::CompressorOxide::new(flags);
-        let deflate_res = deflate::stream::deflate(&mut compressor, contents,
-            &mut self.compressed_buffer, miniz_oxide::MZFlush::Finish);
-        match deflate_res.status {
-            Err(e) => return Err(io::Error::new(InvalidData,
-                format!("Could not compress block contents: {:?}", e))),
-            Ok(miniz_oxide::MZStatus::StreamEnd) => {},
-            // Here, the compressed buffer was not enough - compressed size is too big
-            Ok(miniz_oxide::MZStatus::Ok) => {
-                assert!(contents.len() >= 2, "Could not compress block {:?}", contents);
-                let middle = contents.len() / 2;
-                let mut bytes_written = self.write(&contents[..middle])?;
-                bytes_written += self.write(&contents[middle..])?;
-                return Ok(bytes_written);
-            },
-            Ok(o) => return Err(io::Error::new(InvalidData,
-                format!("Could not compress block contents: {:?}", o))),
+        self.compressor.reset();
+        let mut bytes_written = 0;
+        let mut crc_digest = crc32::Digest::new(crc32::IEEE);
+        for (i, subcontents) in contents.iter().enumerate() {
+            if subcontents.len() == 0 {
+                continue;
+            }
+            let flush = if i == contents.len() - 1 {
+                miniz_oxide::MZFlush::Finish
+            } else {
+                miniz_oxide::MZFlush::Sync
+            };
+            let deflate_res = deflate::stream::deflate(&mut self.compressor, subcontents,
+                &mut self.compressed_buffer[bytes_written..], flush);
+            match deflate_res.status {
+                Ok(miniz_oxide::MZStatus::StreamEnd)
+                    | Ok(miniz_oxide::MZStatus::Ok)
+                    | Err(miniz_oxide::MZError::Buf) => {},
+                Ok(o) => return Err(io::Error::new(ErrorKind::InvalidData,
+                    format!("Could not compress block contents: {:?}", o))),
+                Err(e) => return Err(io::Error::new(ErrorKind::InvalidData,
+                    format!("Could not compress block contents: {:?}", e))),
+            }
+            bytes_written += deflate_res.bytes_written;
+            // Compressed size is too big.
+            if deflate_res.bytes_consumed != subcontents.len() 
+                    || bytes_written > COMPRESSED_BLOCK_SIZE {
+                return Err(io::Error::new(ErrorKind::WriteZero,
+                    "Compressed size is bigger than MAX_BLOCK_SIZE"));
+            }
+            crc_digest.write(subcontents);
         }
-        // Assert here, because this should not happen.
-        assert!(deflate_res.bytes_consumed == contents.len(),
-            "Could not compress block contents: compressed {} bytes instead of {}",
-            deflate_res.bytes_consumed, contents.len());
-        assert!(deflate_res.bytes_written <= COMPRESSED_BLOCK_SIZE,
-            "Could not compress block contents: compressed size {} > {}",
-            deflate_res.bytes_written, COMPRESSED_BLOCK_SIZE);
 
         const BLOCK_HEADER: &[u8; 16] = &[
              31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
@@ -573,13 +586,171 @@ impl<W: Write> Writer<W> {
               0, 255,   6,   0,  // Extra flags, OS (255 = unknown), extra length (2 bytes)
              66,  67,   2,   0]; // SI1, SI2, subfield len (2 bytes)
         self.stream.write_all(BLOCK_HEADER)?;
-        let block_size = deflate_res.bytes_written + 26;
+        let block_size = bytes_written + 26;
         self.stream.write_u16::<LittleEndian>((block_size - 1) as u16)?;
 
-        let compressed_data = &self.compressed_buffer[..deflate_res.bytes_written];
+        let compressed_data = &self.compressed_buffer[..bytes_written];
         self.stream.write_all(compressed_data)?;
-        self.stream.write_u32::<LittleEndian>(crc::crc32::checksum_ieee(contents))?;
-        self.stream.write_u32::<LittleEndian>(contents.len() as u32)?;
-        Ok(block_size)
+        self.stream.write_u32::<LittleEndian>(crc_digest.sum32())?;
+        self.stream.write_u32::<LittleEndian>(contents_size as u32)?;
+        Ok(())
+    }
+
+    /// Compresses `contents` and writes as a single block.
+    ///
+    /// Input `contents` size should be at most `MAX_BLOCK_SIZE = 65536`.
+    ///
+    /// If the compressed block is bigger than `MAX_BLOCK_SIZE`, the function returns an error
+    /// `WriteZero`.
+    pub fn write(&mut self, contents: &[u8]) -> io::Result<()> {
+        self.write_several(&[contents])
+    }
+}
+
+/// A struct that allows to write bgzip files in *sentences*.
+///
+/// It implements a `Write` trait, and works similar to a `BufWriter`, but has two functions:
+/// [end_sentence](#method.end_sentence) and [force_end_sentence](#method.force_end_sentence),
+/// that indicate the end of a block of the same nature (for example, each sentence is a single
+/// BAM record).
+///
+/// The `SentenceWriter` will then try to start new bgzip blocks only when a new sentence starts.
+/// Several sentences can still get to the same bgzip block, if they are small enough.
+pub struct SentenceWriter<W: Write> {
+    writer: Writer<W>,
+    contents: Vec<u8>,
+    start: usize,
+    position: usize,
+    ends: Vec<usize>,
+    panicked: bool,
+}
+
+impl<W: Write> SentenceWriter<W> {
+    pub fn new(writer: Writer<W>) -> Self {
+        Self {
+            writer,
+            contents: vec![0; MAX_BLOCK_SIZE + 1],
+            start: 0,
+            position: 0,
+            ends: Vec::new(),
+            panicked: false,
+        }
+    }
+
+    /// End the current sentence.
+    pub fn end_sentence(&mut self) {
+        self.ends.push(self.position);
+    }
+
+    /// End the current sentence and force end the bgzip block (if possible).
+    pub fn force_end_sentence(&mut self) -> io::Result<()> {
+        self.end_sentence();
+        self.write_bgzip()
+    }
+
+    fn update_contents(&mut self, buf: &[u8]) {
+        if self.position + buf.len() <= self.contents.len() {
+            self.contents[self.position..self.position + buf.len()].copy_from_slice(buf);
+            self.position += buf.len();
+        } else {
+            let split = self.contents.len() - self.position;
+            self.contents[self.position..].copy_from_slice(&buf[..split]);
+            self.position = buf.len() - split;
+            self.contents[..self.position].copy_from_slice(&buf[split..]);
+        }
+    }
+
+    /// Try to write a bgzip block from contents `[self.start - end)`.
+    fn try_write(&mut self, end: usize) -> io::Result<()> {
+        self.panicked = true;
+        if end > self.start {
+            self.writer.write(&self.contents[self.start..end])?
+        } else {
+            self.writer.write_several(&[&self.contents[self.start..], &self.contents[..end]])?
+        };
+        self.start = end;
+        self.panicked = false;
+        Ok(())
+    }
+
+    fn get_len(&self, end: usize) -> usize {
+        if self.start <= end {
+            end - self.start
+        } else {
+            self.contents.len() - self.start + end
+        }
+    }
+
+    /// Try different ends to write a bgzip block.
+    fn write_bgzip(&mut self) -> io::Result<()> {
+        let mut prev_end = std::usize::MAX;
+
+        for i in (0..self.ends.len()).rev() {
+            let end = self.ends[i];
+            if prev_end == end {
+                continue;
+            }
+            prev_end = end;
+            match self.try_write(end) {
+                Ok(()) => {
+                    self.ends.drain(..i + 1);
+                    return Ok(());
+                },
+                Err(ref e) if e.kind() == ErrorKind::WriteZero => {},
+                Err(e) => return Err(e),
+            }
+        }
+        self.ends.clear();
+
+        let last_end_len = self.get_len(prev_end);
+        let mut curr_len = self.get_len(self.position);
+        if curr_len >= last_end_len {
+            curr_len /= 2;
+        }
+        while curr_len >= 1 {
+            let end = (self.start + curr_len) % self.contents.len();
+            match self.try_write(end) {
+                Ok(()) => return Ok(()),
+                Err(ref e) if e.kind() == ErrorKind::WriteZero => {},
+                Err(e) => return Err(e),
+            }
+            curr_len /= 2;
+        }
+        panic!("Failed to compress data");
+    }
+
+    /// Writes all the remaining contents to bgzip and an empty block.
+    pub fn finish(&mut self) -> io::Result<()> {
+        self.flush()?;
+        self.writer.write_empty()
+    }
+}
+
+impl<W: Write> Write for SentenceWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.get_len(self.position) + buf.len() <= MAX_BLOCK_SIZE {
+            self.update_contents(buf);
+            return Ok(buf.len());
+        }
+
+        self.write_bgzip()?;
+        self.update_contents(buf);
+        return Ok(buf.len());
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.ends.clear();
+        while self.start != self.position {
+            self.write_bgzip()?;
+        }
+        Ok(())
+    }
+}
+
+impl<W: Write> Drop for SentenceWriter<W> {
+    fn drop(&mut self) {
+        if !self.panicked {
+            let _ignore = self.finish();
+        }
     }
 }

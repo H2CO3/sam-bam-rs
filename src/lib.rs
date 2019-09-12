@@ -87,8 +87,10 @@ pub mod bgzip;
 pub mod cigar;
 /// A module with BAM records and operations on them.
 pub mod record;
-/// A module with various BAM readers.
+/// A module with indexed and consecutive BAM readers.
 pub mod bam_reader;
+/// A module with a BAM writer.
+pub mod bam_writer;
 /// A module that describes SAM/BAM header.
 pub mod header;
 /// A module that describes SAM reader and writer.

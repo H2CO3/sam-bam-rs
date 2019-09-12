@@ -7,6 +7,60 @@ use super::header::Header;
 use super::record::{Record, Error};
 use super::{RecordReader, RecordWriter};
 
+/// Builder of the [SamWriter](struct.SamWriter.html).
+pub struct SamWriterBuilder {
+    header: Option<Header>,
+    skip_header: bool,
+}
+
+impl SamWriterBuilder {
+    pub fn new() -> Self {
+        Self {
+            header: None,
+            skip_header: false,
+        }
+    }
+
+    /// Specifies SAM header.
+    pub fn header(&mut self, header: Header) -> &mut Self {
+        self.header = Some(header);
+        self
+    }
+
+    /// Option to skip header when creating the SAM writer (false by default).
+    pub fn skip_header(&mut self, skip: bool) -> &mut Self {
+        self.skip_header = skip;
+        self
+    }
+
+    /// Creates a SAM writer from a file. If you want to use the same instance of
+    /// [SamWriterBuilder](struct.SamWriterBuilder.html) again, you need to specify header again.
+    ///
+    /// Panics if the header was not specified.
+    pub fn from_path<P: AsRef<Path>>(&mut self, path: P) -> Result<SamWriter<BufWriter<File>>> {
+        let stream = BufWriter::new(File::create(path)?);
+        self.from_stream(stream)
+    }
+
+    /// Creates a SAM writer from stream. Preferably the stream should be wrapped
+    /// in a buffer writer, such as `BufWriter`.
+    ///
+    /// If you want to use the same instance of
+    /// [SamWriterBuilder](struct.SamWriterBuilder.html) again, you need to specify header again.
+    ///
+    /// Panics if the header was not specified.
+    pub fn from_stream<W: Write>(&mut self, mut stream: W) -> Result<SamWriter<W>> {
+        let header = match std::mem::replace(&mut self.header, None) {
+            None => panic!("Cannot construct SAM writer without a header"),
+            Some(header) => header,
+        };
+        if !self.skip_header {
+            header.write_text(&mut stream)?;
+        }
+        Ok(SamWriter { stream, header })
+    }
+}
+
 /// Writes records in SAM format.
 pub struct SamWriter<W: Write> {
     stream: W,
@@ -14,19 +68,22 @@ pub struct SamWriter<W: Write> {
 }
 
 impl SamWriter<BufWriter<File>> {
+    /// Create a [builder](struct.SamWriterBuilder.html).
+    pub fn build() -> SamWriterBuilder {
+        SamWriterBuilder::new()
+    }
+
     /// Creates a SAM writer from a path and a header.
     pub fn from_path<P: AsRef<Path>>(path: P, header: Header) -> Result<Self> {
-        let stream = BufWriter::new(File::create(path)?);
-        SamWriter::from_stream(stream, header)
+        SamWriterBuilder::new().header(header).from_path(path)
     }
 }
 
 impl<W: Write> SamWriter<W> {
     /// Creates a SAM writer from a stream and a header. Preferably the stream should be wrapped
     /// in a buffer writer, such as `BufWriter`.
-    pub fn from_stream(mut stream: W, header: Header) -> Result<Self> {
-        header.write_text(&mut stream)?;
-        Ok(SamWriter { stream, header })
+    pub fn from_stream(stream: W, header: Header) -> Result<Self> {
+        SamWriterBuilder::new().header(header).from_stream(stream)
     }
 
     /// Returns [header](../header/struct.Header.html).
