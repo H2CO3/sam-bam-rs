@@ -7,7 +7,7 @@ description = "Library that allows to read BAM files, written completely in Rust
 repository = "https://gitlab.com/tprodanov/bam"
 readme = "README.md"
 license = "MIT"
-keywords = ["bam", "htslib", "backend", "bio", "bgzip"]
+keywords = ["bam", "sam", "htslib", "bio", "bgzip"]
 documentation = "https://docs.rs/bam"
 exclude = [".cargo_vcs_info.json", ".gitignore"]
 
@@ -20,14 +20,14 @@ incremental = false
 
 [features]
 default = []
-check_crc = ["crc"]
+check_crc = []
 
 [dependencies]
 byteorder = "1.3"
 inflate = "0.4"
 miniz_oxide = "0.3"
 lru-cache = "0.1"
-crc = { version = "1.8", optional = true }
+crc = "1.8"
 
 [dev-dependencies]
 rand = "0.7.0"

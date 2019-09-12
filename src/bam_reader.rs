@@ -40,12 +40,13 @@ impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
             if !(self.predicate)(&record) {
                 continue;
             }
-            if record.bin() > index::MAX_BIN {
+            let record_bin = record.calculate_bin();
+            if record_bin > index::MAX_BIN {
                 record.clear();
                 return Err(record::Error::Corrupted(
                     "Read has BAI bin bigger than max possible value".to_string()));
             }
-            let (min_start, max_end) = index::bin_to_region(record.bin());
+            let (min_start, max_end) = index::bin_to_region(record_bin);
             if min_start >= self.start && max_end <= self.end {
                 return Ok(());
             }

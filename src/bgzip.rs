@@ -1,13 +1,14 @@
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::path::Path;
 use std::cmp::min;
 use std::fmt::{self, Display, Debug, Formatter};
 
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use lru_cache::LruCache;
 use miniz_oxide::inflate::stream as miniz_inflate;
+use miniz_oxide::deflate;
 
 use super::index::{Chunk, VirtualOffset};
 
@@ -122,26 +123,23 @@ impl Block {
         };
 
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])?;
-        let inflate_result = miniz_inflate::inflate(
+        let inflate_res = miniz_inflate::inflate(
             &mut miniz_inflate::InflateState::new(miniz_oxide::DataFormat::Raw),
             &reading_buffer[12 + extra_length..block_size - 8],
             &mut self.contents, miniz_oxide::MZFlush::Finish);
-        match inflate_result.status {
+        match inflate_res.status {
             Err(e) => return Err(BlockError::Corrupted(
                 format!("Could not decompress block contents: {:?}", e))),
             Ok(miniz_oxide::MZStatus::StreamEnd) => {},
             Ok(o) => return Err(BlockError::Corrupted(
                 format!("Could not decompress block contents: {:?}", o))),
         }
-        if inflate_result.bytes_consumed != block_size - 20 - extra_length {
-            return Err(BlockError::Corrupted(
-                format!("Could not decompress block contents: decompressed {} bytes instead of {}",
-                inflate_result.bytes_consumed, block_size - 20 - extra_length)));
-        }
-        self.contents_size = inflate_result.bytes_written;
+        // This should not happen - therefore assert.
+        assert!(inflate_res.bytes_consumed == block_size - 20 - extra_length,
+            "Could not decompress block contents: decompressed {} bytes instead of {}",
+                inflate_res.bytes_consumed, block_size - 20 - extra_length);
+        self.contents_size = inflate_res.bytes_written;
 
-        let _exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
-            .read_u32::<LittleEndian>()?;
         let exp_contents_size = (&reading_buffer[block_size - 4..block_size])
             .read_u32::<LittleEndian>()?;
         if exp_contents_size as usize > MAX_BLOCK_SIZE {
@@ -150,10 +148,12 @@ impl Block {
         }
 
         #[cfg(feature = "check_crc")] {
+            let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
+                .read_u32::<LittleEndian>()?;
             let obs_crc32 = crc::crc32::checksum_ieee(&self.contents[..self.contents_size]);
-            if obs_crc32 != _exp_crc32 {
+            if obs_crc32 != exp_crc32 {
                 return Err(BlockError::Corrupted(
-                    format!("CRC do not match: expected {}, observed {}", _exp_crc32, obs_crc32)));
+                    format!("CRC do not match: expected {}, observed {}", exp_crc32, obs_crc32)));
             }
         }
         if exp_contents_size as usize != self.contents_size {
@@ -485,5 +485,101 @@ impl<R: Read> Read for ConsecutiveReader<R> {
             self.contents_offset = bytes;
             return Ok(bytes);
         }
+    }
+}
+
+const COMPRESSED_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - 26;
+
+/// Bgzip writer, that allows to compress and write blocks with uncompressed
+/// size at most `MAX_BLOCK_SIZE = 65536`.
+pub struct Writer<W: Write> {
+    stream: W,
+    compressed_buffer: Vec<u8>,
+    level: i32,
+}
+
+impl Writer<File> {
+    /// Opens a bgzip writer from a path and compression level. Maximal compression level is 10.
+    pub fn from_path<P: AsRef<Path>>(path: P, level: u8) -> io::Result<Self> {
+        let stream = File::create(path)
+            .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip writer: {}", e)))?;
+        Ok(Writer::from_stream(stream, level))
+    }
+}
+
+impl<W: Write> Writer<W> {
+    /// Opens a bgzip writer from a stream and compression level. Maximal compression level is 10.
+    pub fn from_stream(stream: W, level: u8) -> Self {
+        assert!(level <= 10, "Compression level should be at most 10");
+        Writer {
+            stream,
+            compressed_buffer: vec![0; COMPRESSED_BLOCK_SIZE],
+            level: level as i32,
+        }
+    }
+
+    /// Writes an empty block. Returns the number of written bytes = 28.
+    pub fn write_empty(&mut self) -> io::Result<usize> {
+        const EMPTY_BLOCK: &[u8; 28] = &[0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00];
+        self.stream.write_all(EMPTY_BLOCK)?;
+        Ok(28)
+    }
+
+    /// Compresses the `contents` and writes a block (or several blocks if compressed size is
+    /// too big). Input `contents` should take at most `MAX_BLOCK_SIZE = 65536` bytes.
+    /// Returns the number of written bytes.
+    pub fn write(&mut self, contents: &[u8]) -> io::Result<usize> {
+        if contents.is_empty() {
+            return self.write_empty();
+        }
+        if contents.len() > MAX_BLOCK_SIZE {
+            panic!("Cannot write a block: uncompressed size {} > {}", contents.len(),
+                MAX_BLOCK_SIZE);
+        }
+
+        // Level, window_bits = 0 - raw deflate, strategy = 0
+        let flags = deflate::core::create_comp_flags_from_zip_params(self.level, 0, 0);
+        let mut compressor = deflate::core::CompressorOxide::new(flags);
+        let deflate_res = deflate::stream::deflate(&mut compressor, contents,
+            &mut self.compressed_buffer, miniz_oxide::MZFlush::Finish);
+        match deflate_res.status {
+            Err(e) => return Err(io::Error::new(InvalidData,
+                format!("Could not compress block contents: {:?}", e))),
+            Ok(miniz_oxide::MZStatus::StreamEnd) => {},
+            // Here, the compressed buffer was not enough - compressed size is too big
+            Ok(miniz_oxide::MZStatus::Ok) => {
+                assert!(contents.len() >= 2, "Could not compress block {:?}", contents);
+                let middle = contents.len() / 2;
+                let mut bytes_written = self.write(&contents[..middle])?;
+                bytes_written += self.write(&contents[middle..])?;
+                return Ok(bytes_written);
+            },
+            Ok(o) => return Err(io::Error::new(InvalidData,
+                format!("Could not compress block contents: {:?}", o))),
+        }
+        // Assert here, because this should not happen.
+        assert!(deflate_res.bytes_consumed == contents.len(),
+            "Could not compress block contents: compressed {} bytes instead of {}",
+            deflate_res.bytes_consumed, contents.len());
+        assert!(deflate_res.bytes_written <= COMPRESSED_BLOCK_SIZE,
+            "Could not compress block contents: compressed size {} > {}",
+            deflate_res.bytes_written, COMPRESSED_BLOCK_SIZE);
+
+        const BLOCK_HEADER: &[u8; 16] = &[
+             31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
+              0,   0,   0,   0,  // Modification time
+              0, 255,   6,   0,  // Extra flags, OS (255 = unknown), extra length (2 bytes)
+             66,  67,   2,   0]; // SI1, SI2, subfield len (2 bytes)
+        self.stream.write_all(BLOCK_HEADER)?;
+        let block_size = deflate_res.bytes_written + 26;
+        self.stream.write_u16::<LittleEndian>((block_size - 1) as u16)?;
+
+        let compressed_data = &self.compressed_buffer[..deflate_res.bytes_written];
+        self.stream.write_all(compressed_data)?;
+        self.stream.write_u32::<LittleEndian>(crc::crc32::checksum_ieee(contents))?;
+        self.stream.write_u32::<LittleEndian>(contents.len() as u32)?;
+        Ok(block_size)
     }
 }
