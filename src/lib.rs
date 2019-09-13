@@ -97,7 +97,8 @@ pub mod header;
 pub mod sam;
 
 pub use bam_reader::IndexedReader;
-pub use bam_reader::Reader;
+pub use bam_reader::BamReader;
+pub use bam_writer::BamWriter;
 
 pub use header::Header;
 

@@ -56,20 +56,29 @@ impl BamWriterBuilder {
     /// [BamWriterBuilder](struct.BamWriterBuilder.html) again, you need to specify header again.
     ///
     /// Panics if the header was not specified.
-    pub fn from_stream<W: Write>(&mut self, mut stream: W) -> Result<BamWriter<W>> {
+    pub fn from_stream<W: Write>(&mut self, stream: W) -> Result<BamWriter<W>> {
         let header = match std::mem::replace(&mut self.header, None) {
             None => panic!("Cannot construct BAM writer without a header"),
             Some(header) => header,
         };
+        let mut writer = bgzip::SentenceWriter::new(
+            bgzip::Writer::from_stream(stream, self.level));
         if !self.skip_header {
-            header.write_text(&mut stream)?;
+            header.write_bam(&mut writer)?;
         }
-        unimplemented!();
-        // /Ok(BamWriter { , header })
+        writer.flush()?;
+        Ok(BamWriter { writer, header })
     }
 }
 
 pub struct BamWriter<W: Write> {
-    writer: bgzip::Writer<W>,
+    writer: bgzip::SentenceWriter<W>,
     header: Header,
+}
+
+impl BamWriter<BufWriter<File>> {
+    /// Creates a [BamWriterBuilder](struct.BamWriterBuilder.html).
+    pub fn build() -> BamWriterBuilder {
+        BamWriterBuilder::new()
+    }
 }

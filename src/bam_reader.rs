@@ -209,7 +209,7 @@ impl IndexedReaderBuilder {
     }
 }
 
-/// BAM file reader. In contrast to [Reader](struct.Reader.html) the `IndexedReader`
+/// BAM file reader. In contrast to [BamReader](struct.BamReader.html) the `IndexedReader`
 /// allows to fetch records from arbitrary positions,
 /// but does not allow to read all records consecutively.
 ///
@@ -375,7 +375,7 @@ impl<R: Read + Seek> IndexedReader<R> {
     }
 }
 
-/// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `Reader`
+/// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `BamReader`
 /// allows to read all records consecutively, but does not allow random access.
 ///
 /// Implements [RecordReader](struct.RecordReader.html) trait.
@@ -384,7 +384,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// extern crate bam;
 ///
 /// fn main() {
-///     let reader = bam::Reader::from_path("test.bam").unwrap();
+///     let reader = bam::BamReader::from_path("test.bam").unwrap();
 ///
 ///     let header = reader.header().clone();
 ///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
@@ -403,7 +403,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// use bam::RecordReader;
 ///
 /// fn main() {
-///     let mut reader = bam::Reader::from_path("test.bam").unwrap();
+///     let mut reader = bam::BamReader::from_path("test.bam").unwrap();
 ///
 ///     let header = reader.header().clone();
 ///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
@@ -419,12 +419,12 @@ impl<R: Read + Seek> IndexedReader<R> {
 ///     }
 /// }
 /// ```
-pub struct Reader<R: Read> {
+pub struct BamReader<R: Read> {
     bgzip_reader: bgzip::ConsecutiveReader<R>,
     header: Header,
 }
 
-impl Reader<File> {
+impl BamReader<File> {
     /// Creates BAM file reader from `path`.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let stream = File::open(path)
@@ -433,7 +433,7 @@ impl Reader<File> {
     }
 }
 
-impl<R: Read> Reader<R> {
+impl<R: Read> BamReader<R> {
     /// Creates BAM file reader from `stream`. The stream does not have to support random access.
     pub fn from_stream(stream: R) -> Result<Self> {
         let mut bgzip_reader = bgzip::ConsecutiveReader::from_stream(stream)?;
@@ -444,14 +444,14 @@ impl<R: Read> Reader<R> {
     }
 }
 
-impl<R: Read> Reader<R> {
+impl<R: Read> BamReader<R> {
     /// Returns [header](../header/struct.Header.html)
     pub fn header(&self) -> &Header {
         &self.header
     }
 }
 
-impl<R: Read> RecordReader for Reader<R> {
+impl<R: Read> RecordReader for BamReader<R> {
     fn read_into(&mut self, record: &mut record::Record) -> result::Result<(), record::Error> {
         if let Err(e) = record.fill_from_bam(&mut self.bgzip_reader) {
             record.clear();
@@ -470,7 +470,7 @@ impl<R: Read> RecordReader for Reader<R> {
 /// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
 /// If the record was truncated or the reading failed for a different reason, the function
 /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
-impl<R: Read> Iterator for Reader<R> {
+impl<R: Read> Iterator for BamReader<R> {
     type Item = result::Result<record::Record, record::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

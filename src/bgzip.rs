@@ -652,7 +652,7 @@ impl<W: Write> SentenceWriter<W> {
     }
 
     /// Try to write a bgzip block from contents `[self.start - end)`.
-    fn try_write(&mut self, mut end: usize) -> io::Result<()> {
+    fn try_write(&mut self, end: usize) -> io::Result<()> {
         self.panicked = true;
         if self.start <= end {
             self.writer.write(&self.contents[self.start..end])?

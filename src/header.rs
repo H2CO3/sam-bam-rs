@@ -312,6 +312,23 @@ impl Header {
         Ok(())
     }
 
+    /// Writes header in an uncompressed BAM format.
+    pub fn write_bam<W: Write>(&self, writer: &mut W) -> Result<()> {
+        writer.write_all(&[b'B', b'A', b'M', 1])?;
+        let mut header_text = Vec::new();
+        self.write_text(&mut header_text).expect("Failed to write BAM text to a vector");
+        writer.write_i32::<LittleEndian>(header_text.len() as i32)?;
+        writer.write_all(&header_text)?;
+        writer.write_i32::<LittleEndian>(self.ref_names.len() as i32)?;
+        for (name, len) in self.ref_names.iter().zip(self.ref_lengths.iter()) {
+            writer.write_i32::<LittleEndian>(name.len() as i32 + 1)?;
+            writer.write_all(name.as_bytes())?;
+            writer.write_u8(0)?;
+            writer.write_i32::<LittleEndian>(*len as i32)?;
+        }
+        Ok(())
+    }
+
     pub fn push_line(&mut self, line: &str) -> Result<()> {
         if line.starts_with("@CO") {
             let comment = line.splitn(2, '\t').skip(1).next()
