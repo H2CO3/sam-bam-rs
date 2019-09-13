@@ -535,8 +535,13 @@ impl<W: Write> Writer<W> {
     ///
     /// Sum length of the `contents` should be at most `MAX_BLOCK_SIZE = 65536`.
     ///
+    /// # Errors
+    ///
     /// If the compressed block is bigger than `MAX_BLOCK_SIZE`, the function returns an error
     /// `WriteZero`.
+    ///
+    /// The function can return an error `InvalidData` if the any slice in `contents` has length 0,
+    /// and sum length is positive.
     pub fn write_several(&mut self, contents: &[&[u8]]) -> io::Result<()> {
         let contents_size: usize = contents.iter().map(|slice| slice.len()).sum();
         if contents_size == 0 {
@@ -552,7 +557,8 @@ impl<W: Write> Writer<W> {
         let mut crc_digest = crc32::Digest::new(crc32::IEEE);
         for (i, subcontents) in contents.iter().enumerate() {
             if subcontents.len() == 0 {
-                continue;
+                return Err(io::Error::new(ErrorKind::InvalidData,
+                    "bgzip::Writer::write_several: slices cannot be empty."));
             }
             let flush = if i == contents.len() - 1 {
                 miniz_oxide::MZFlush::Finish
@@ -607,12 +613,15 @@ impl<W: Write> Writer<W> {
     }
 }
 
+const CONTENTS_SIZE: usize = MAX_BLOCK_SIZE + 1;
+
 /// A struct that allows to write bgzip files in *sentences*.
 ///
-/// It implements a `Write` trait, and works similar to a `BufWriter`, but has two functions:
-/// [end_sentence](#method.end_sentence) and [force_end_sentence](#method.force_end_sentence),
-/// that indicate the end of a block of the same nature (for example, each sentence is a single
-/// BAM record).
+/// It implements a `Write` trait, and works similar to a `BufWriter`, but has a method
+/// [end_sentence](#method.end_sentence),
+/// that indicates the end of a block of the same nature (for example, a BAM record can represent
+/// a single sentence). Method `flush` ignores sentences and immediately writes
+/// the remaining buffer.
 ///
 /// The `SentenceWriter` will then try to start new bgzip blocks only when a new sentence starts.
 /// Several sentences can still get to the same bgzip block, if they are small enough.
@@ -621,7 +630,7 @@ pub struct SentenceWriter<W: Write> {
     contents: Vec<u8>,
     start: usize,
     position: usize,
-    ends: Vec<usize>,
+    end: Option<usize>,
     panicked: bool,
 }
 
@@ -629,46 +638,28 @@ impl<W: Write> SentenceWriter<W> {
     pub fn new(writer: Writer<W>) -> Self {
         Self {
             writer,
-            contents: vec![0; MAX_BLOCK_SIZE + 1],
+            contents: vec![0; CONTENTS_SIZE],
             start: 0,
             position: 0,
-            ends: Vec::new(),
+            end: None,
             panicked: false,
         }
     }
 
     /// End the current sentence.
     pub fn end_sentence(&mut self) {
-        self.ends.push(self.position);
-    }
-
-    /// End the current sentence and force end the bgzip block (if possible).
-    pub fn force_end_sentence(&mut self) -> io::Result<()> {
-        self.end_sentence();
-        self.write_bgzip()
-    }
-
-    fn update_contents(&mut self, buf: &[u8]) {
-        if self.position + buf.len() <= self.contents.len() {
-            self.contents[self.position..self.position + buf.len()].copy_from_slice(buf);
-            self.position += buf.len();
-        } else {
-            let split = self.contents.len() - self.position;
-            self.contents[self.position..].copy_from_slice(&buf[..split]);
-            self.position = buf.len() - split;
-            self.contents[..self.position].copy_from_slice(&buf[split..]);
-        }
+        self.end = Some(self.position);
     }
 
     /// Try to write a bgzip block from contents `[self.start - end)`.
-    fn try_write(&mut self, end: usize) -> io::Result<()> {
+    fn try_write(&mut self, mut end: usize) -> io::Result<()> {
         self.panicked = true;
-        if end > self.start {
+        if self.start <= end {
             self.writer.write(&self.contents[self.start..end])?
         } else {
             self.writer.write_several(&[&self.contents[self.start..], &self.contents[..end]])?
         };
-        self.start = end;
+        self.start = end % CONTENTS_SIZE;
         self.panicked = false;
         Ok(())
     }
@@ -677,46 +668,38 @@ impl<W: Write> SentenceWriter<W> {
         if self.start <= end {
             end - self.start
         } else {
-            self.contents.len() - self.start + end
+            CONTENTS_SIZE - self.start + end
         }
     }
 
     /// Try different ends to write a bgzip block.
     fn write_bgzip(&mut self) -> io::Result<()> {
-        let mut prev_end = std::usize::MAX;
-
-        for i in (0..self.ends.len()).rev() {
-            let end = self.ends[i];
-            if prev_end == end {
-                continue;
-            }
-            prev_end = end;
-            match self.try_write(end) {
-                Ok(()) => {
-                    self.ends.drain(..i + 1);
-                    return Ok(());
-                },
-                Err(ref e) if e.kind() == ErrorKind::WriteZero => {},
-                Err(e) => return Err(e),
+        let mut write_len = self.get_len(self.position);
+        if let Some(end) = self.end {
+            let end_len = self.get_len(end);
+            if end_len >= write_len / 3 {
+                // Block until sentence end is not too small.
+                write_len = end_len;
             }
         }
-        self.ends.clear();
+        self.end = None;
 
-        let last_end_len = self.get_len(prev_end);
-        let mut curr_len = self.get_len(self.position);
-        if curr_len >= last_end_len {
-            curr_len /= 2;
-        }
-        while curr_len >= 1 {
-            let end = (self.start + curr_len) % self.contents.len();
-            match self.try_write(end) {
+        loop {
+            assert!(write_len != 0);
+            match self.try_write((self.start + write_len - 1) % CONTENTS_SIZE + 1) {
                 Ok(()) => return Ok(()),
                 Err(ref e) if e.kind() == ErrorKind::WriteZero => {},
                 Err(e) => return Err(e),
             }
-            curr_len /= 2;
+            // const DECREASE_BY: usize = 2000;
+            const DECREASE_BY: usize = 1;
+            if write_len <= DECREASE_BY {
+                return Err(io::Error::new(ErrorKind::Other,
+                    format!("Compressed size is too big. Last attempt to compress {} bytes failed",
+                    write_len)));
+            }
+            write_len -= DECREASE_BY;
         }
-        panic!("Failed to compress data");
     }
 
     /// Writes all the remaining contents to bgzip and an empty block.
@@ -728,18 +711,27 @@ impl<W: Write> SentenceWriter<W> {
 
 impl<W: Write> Write for SentenceWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.get_len(self.position) + buf.len() <= MAX_BLOCK_SIZE {
-            self.update_contents(buf);
-            return Ok(buf.len());
+        let mut remains = CONTENTS_SIZE - 1 - self.get_len(self.position);
+        if remains == 0 {
+            self.write_bgzip()?;
+            remains = CONTENTS_SIZE - 1 - self.get_len(self.position);
+        };
+        let write_bytes = min(buf.len(), remains);
+        if self.position + write_bytes > CONTENTS_SIZE {
+            let split = CONTENTS_SIZE - self.position;
+            self.contents[self.position..].copy_from_slice(&buf[..split]);
+            self.position = write_bytes - split;
+            self.contents[..self.position].copy_from_slice(&buf[split..write_bytes]);
+        } else {
+            self.contents[self.position..self.position + write_bytes]
+                .copy_from_slice(&buf[..write_bytes]);
+            self.position = (self.position + write_bytes) % CONTENTS_SIZE;
         }
-
-        self.write_bgzip()?;
-        self.update_contents(buf);
-        return Ok(buf.len());
+        Ok(write_bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.ends.clear();
+        self.end = None;
         while self.start != self.position {
             self.write_bgzip()?;
         }
