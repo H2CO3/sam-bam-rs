@@ -521,6 +521,11 @@ impl TagViewer {
         }
     }
 
+    /// Returns raw data.
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
     /// Clears the contents but does not touch capacity.
     pub fn clear(&mut self) {
         self.lengths.clear();

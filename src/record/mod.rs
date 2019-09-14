@@ -593,7 +593,7 @@ impl Record {
             return end;
         }
 
-        let end = self.start + self.cigar.calculate_aligned_len() as i32;
+        let end = self.start + self.cigar.calculate_ref_len() as i32;
         self.end.set(end);
         end
     }
@@ -679,10 +679,69 @@ impl Record {
         writeln!(f)
     }
 
-    /// Sets record name.
+    /// Writes a record in BAM format.
+    pub fn write_bam<W: Write>(&self, stream: &mut W) -> io::Result<()> {
+        let raw_cigar_len = if self.cigar.len() <= 0xffff {
+            4 * self.cigar.len()
+        } else {
+            10 + 4 * self.cigar.len()
+        };
+        let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len + self.seq.raw.len()
+            + self.qual.len() + self.tags.raw().len();
+        stream.write_i32::<LittleEndian>(total_block_len as i32)?;
+
+        stream.write_i32::<LittleEndian>(self.ref_id)?;
+        stream.write_i32::<LittleEndian>(self.start)?;
+        stream.write_u8(self.name.len() as u8 + 1)?;
+        stream.write_u8(self.mapq)?;
+        stream.write_u16::<LittleEndian>(self.calculate_bin())?;
+
+        if self.cigar.len() <= 0xffff {
+            stream.write_u16::<LittleEndian>(self.cigar.len() as u16)?;
+        } else {
+            stream.write_u16::<LittleEndian>(2)?;
+        }
+
+        stream.write_u16::<LittleEndian>(self.flag)?;
+        stream.write_i32::<LittleEndian>(self.seq.len() as i32)?;
+        stream.write_i32::<LittleEndian>(self.next_ref_id)?;
+        stream.write_i32::<LittleEndian>(self.next_start)?;
+        stream.write_i32::<LittleEndian>(self.template_len)?;
+        
+        stream.write_all(&self.name)?;
+        stream.write_u8(0)?;
+        if self.cigar.len() <= 0xffff {
+            for &el in self.cigar.raw() {
+                stream.write_u32::<LittleEndian>(el)?;
+            }
+        } else {
+            let seq_len = if self.seq.len() != 0 {
+                self.seq.len() as u32
+            } else {
+                self.cigar.calculate_query_len()
+            };
+            stream.write_u32::<LittleEndian>(seq_len << 4 | 4)?;
+            let ref_len = (self.calculate_end() - self.start) as u32;
+            stream.write_u32::<LittleEndian>(ref_len << 4 | 3)?;
+        }
+        stream.write_all(&self.seq.raw)?;
+        stream.write_all(&self.qual.raw)?;
+        stream.write_all(self.tags.raw())?;
+
+        if self.cigar.len() > 0xffff {
+            stream.write_all(b"CGBI")?;
+            stream.write_i32::<LittleEndian>(self.cigar.len() as i32)?;
+            for &el in self.cigar.raw() {
+                stream.write_u32::<LittleEndian>(el)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets record name (only first 254 letters will be used).
     pub fn set_name<T: IntoIterator<Item = u8>>(&mut self, name: T) {
         self.name.clear();
-        self.name.extend(name);
+        self.name.extend(name.into_iter().take(254));
     }
 
     pub fn set_flag(&mut self, flag: u16) {

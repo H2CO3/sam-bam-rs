@@ -5,6 +5,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 /// Cigar operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub enum Operation {
     AlnMatch = 0,
     Insertion = 1,
@@ -166,10 +167,19 @@ impl Cigar {
     /// Calculates reference alignment length. Consider using
     /// [Record::calculate_end](../record/struct.Record.html#method.calculate_end), as the
     /// record alignment end is stored once calculated.
-    pub fn calculate_aligned_len(&self) -> u32 {
+    pub fn calculate_ref_len(&self) -> u32 {
         self.0.iter().map(|value| match value & 0xf {
             0 | 2 | 3 | 7 | 8 => value >> 4,
             1 | 4 | 5 | 6 => 0,
+            _ => panic!("Unexpected Cigar operation: {}", value & 0xf),
+        }).sum::<u32>()
+    }
+
+    /// Calculates query length.
+    pub fn calculate_query_len(&self) -> u32 {
+        self.0.iter().map(|value| match value & 0xf {
+            0 | 1 | 4 | 7 | 8 => value >> 4,
+            2 | 3 | 5 | 6 => 0,
             _ => panic!("Unexpected Cigar operation: {}", value & 0xf),
         }).sum::<u32>()
     }

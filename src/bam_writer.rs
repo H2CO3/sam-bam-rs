@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::Path;
 
 use super::bgzip;
-use super::Header;
+use super::{Header, Record, RecordWriter};
 
 /// Builder of the [BamWriter](struct.BamWriter.html).
 pub struct BamWriterBuilder {
@@ -80,5 +80,31 @@ impl BamWriter<BufWriter<File>> {
     /// Creates a [BamWriterBuilder](struct.BamWriterBuilder.html).
     pub fn build() -> BamWriterBuilder {
         BamWriterBuilder::new()
+    }
+
+    /// Creates a new `BamWriter` from a path and header.
+    pub fn from_path<P: AsRef<Path>>(path: P, header: Header) -> Result<Self> {
+        Self::build().header(header).from_path(path)
+    }
+}
+
+impl<W: Write> BamWriter<W> {
+    /// Creates a new `BamWriter` from a stream and header. Preferably the stream should be wrapped
+    /// in a buffer writer, such as `BufWriter`.
+    pub fn from_stream(stream: W, header: Header) -> Result<Self> {
+        BamWriter::build().header(header).from_stream(stream)
+    }
+
+    /// Returns BAM header.
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+}
+
+impl<W: Write> RecordWriter for BamWriter<W> {
+    fn write(&mut self, record: &Record) -> std::io::Result<()> {
+        record.write_bam(&mut self.writer)?;
+        self.writer.end_sentence();
+        Ok(())
     }
 }
