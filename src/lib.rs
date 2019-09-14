@@ -62,22 +62,12 @@
 //! ```
 //!
 //! Find more at [Reader](bam_reader/struct.Reader.html).
-//!
-//! ## CRC32
-//!
-//! Each bgzip block contains a CRC32 checksum. By default, the *bam* crate does not compare
-//! checksums to save time.
-//! However, you can compare checksums by adding the following line to your Cargo.toml:
-//! ```
-//! bam = { version = "*", features = ["check_crc"] }
-//! ```
-//!
 
 extern crate byteorder;
 extern crate inflate;
 extern crate miniz_oxide;
 extern crate lru_cache;
-extern crate crc;
+extern crate crc32fast;
 
 /// A module that works with BAI index.
 pub mod index;

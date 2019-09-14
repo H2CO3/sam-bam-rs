@@ -9,7 +9,6 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use lru_cache::LruCache;
 use miniz_oxide::inflate::stream as miniz_inflate;
 use miniz_oxide::deflate;
-use crc::{crc32, Hasher32};
 
 use super::index::{Chunk, VirtualOffset};
 
@@ -150,14 +149,14 @@ impl Block {
                 exp_contents_size, MAX_BLOCK_SIZE)));
         }
 
-        #[cfg(feature = "check_crc")] {
-            let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
-                .read_u32::<LittleEndian>()?;
-            let obs_crc32 = crc32::checksum_ieee(&self.contents[..self.contents_size]);
-            if obs_crc32 != exp_crc32 {
-                return Err(BlockError::Corrupted(
-                    format!("CRC do not match: expected {}, observed {}", exp_crc32, obs_crc32)));
-            }
+        let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
+            .read_u32::<LittleEndian>()?;
+        let mut hasher = crc32fast::Hasher::new();
+        hasher.update(&self.contents[..self.contents_size]);
+        let obs_crc32 = hasher.finalize();
+        if obs_crc32 != exp_crc32 {
+            return Err(BlockError::Corrupted(
+                format!("CRC do not match: expected {}, observed {}", exp_crc32, obs_crc32)));
         }
         if exp_contents_size as usize != self.contents_size {
             return Err(BlockError::Corrupted(
@@ -554,7 +553,7 @@ impl<W: Write> Writer<W> {
 
         self.compressor.reset();
         let mut bytes_written = 0;
-        let mut crc_digest = crc32::Digest::new(crc32::IEEE);
+        let mut crc_hasher = crc32fast::Hasher::new();
         for (i, subcontents) in contents.iter().enumerate() {
             if subcontents.len() == 0 {
                 return Err(io::Error::new(ErrorKind::InvalidData,
@@ -583,7 +582,7 @@ impl<W: Write> Writer<W> {
                 return Err(io::Error::new(ErrorKind::WriteZero,
                     "Compressed size is bigger than MAX_BLOCK_SIZE"));
             }
-            crc_digest.write(subcontents);
+            crc_hasher.update(subcontents);
         }
 
         const BLOCK_HEADER: &[u8; 16] = &[
@@ -597,7 +596,7 @@ impl<W: Write> Writer<W> {
 
         let compressed_data = &self.compressed_buffer[..bytes_written];
         self.stream.write_all(compressed_data)?;
-        self.stream.write_u32::<LittleEndian>(crc_digest.sum32())?;
+        self.stream.write_u32::<LittleEndian>(crc_hasher.finalize())?;
         self.stream.write_u32::<LittleEndian>(contents_size as u32)?;
         Ok(())
     }
@@ -691,8 +690,7 @@ impl<W: Write> SentenceWriter<W> {
                 Err(ref e) if e.kind() == ErrorKind::WriteZero => {},
                 Err(e) => return Err(e),
             }
-            // const DECREASE_BY: usize = 2000;
-            const DECREASE_BY: usize = 1;
+            const DECREASE_BY: usize = 2000;
             if write_len <= DECREASE_BY {
                 return Err(io::Error::new(ErrorKind::Other,
                     format!("Compressed size is too big. Last attempt to compress {} bytes failed",
