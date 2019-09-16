@@ -64,10 +64,9 @@
 //! Find more at [Reader](bam_reader/struct.Reader.html).
 
 extern crate byteorder;
-extern crate inflate;
-extern crate miniz_oxide;
 extern crate lru_cache;
 extern crate crc32fast;
+extern crate flate2;
 
 /// A module that works with BAI index.
 pub mod index;

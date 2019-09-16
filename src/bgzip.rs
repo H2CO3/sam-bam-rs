@@ -7,8 +7,8 @@ use std::fmt::{self, Display, Debug, Formatter};
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use lru_cache::LruCache;
-use miniz_oxide::inflate::stream as miniz_inflate;
-use miniz_oxide::deflate;
+use flate2::Compression;
+use flate2::write::{DeflateEncoder, DeflateDecoder};
 
 use super::index::{Chunk, VirtualOffset};
 
@@ -125,29 +125,23 @@ impl Block {
         };
 
         stream.read_exact(&mut reading_buffer[12 + extra_length..block_size])?;
-        let inflate_res = miniz_inflate::inflate(
-            &mut miniz_inflate::InflateState::new(miniz_oxide::DataFormat::Raw),
-            &reading_buffer[12 + extra_length..block_size - 8],
-            &mut self.contents, miniz_oxide::MZFlush::Finish);
-        match inflate_res.status {
-            Err(e) => return Err(BlockError::Corrupted(
-                format!("Could not decompress block contents: {:?}", e))),
-            Ok(miniz_oxide::MZStatus::StreamEnd) => {},
-            Ok(o) => return Err(BlockError::Corrupted(
-                format!("Could not decompress block contents: {:?}", o))),
-        }
-        // This should not happen - therefore assert.
-        assert!(inflate_res.bytes_consumed == block_size - 20 - extra_length,
-            "Could not decompress block contents: decompressed {} bytes instead of {}",
-                inflate_res.bytes_consumed, block_size - 20 - extra_length);
-        self.contents_size = inflate_res.bytes_written;
-
         let exp_contents_size = (&reading_buffer[block_size - 4..block_size])
             .read_u32::<LittleEndian>()?;
         if exp_contents_size as usize > MAX_BLOCK_SIZE {
             return Err(BlockError::Corrupted(format!("Expected contents > MAX_BLOCK_SIZE ({} > {})",
                 exp_contents_size, MAX_BLOCK_SIZE)));
         }
+
+        self.contents_size = {
+            let mut decoder = DeflateDecoder::new(&mut self.contents[..]);
+            decoder.write_all(&reading_buffer[12 + extra_length..block_size - 8])
+                .map_err(|e| BlockError::Corrupted(
+                    format!("Could not decompress block contents: {:?}", e)))?;
+            let remaining_contents = decoder.finish()
+                .map_err(|e| BlockError::Corrupted(
+                    format!("Could not decompress block contents: {:?}", e)))?;
+            MAX_BLOCK_SIZE - remaining_contents.len()
+        };
 
         let exp_crc32 = (&reading_buffer[block_size - 8..block_size - 4])
             .read_u32::<LittleEndian>()?;
@@ -496,11 +490,11 @@ const COMPRESSED_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - 26;
 pub struct Writer<W: Write> {
     stream: W,
     compressed_buffer: Vec<u8>,
-    compressor: deflate::core::CompressorOxide,
+    compression: Compression,
 }
 
 impl Writer<File> {
-    /// Opens a bgzip writer from a path and compression level. Maximal compression level is 10.
+    /// Opens a bgzip writer from a path and compression level. Maximal compression level is 9.
     pub fn from_path<P: AsRef<Path>>(path: P, level: u8) -> io::Result<Self> {
         let stream = File::create(path)
             .map_err(|e| io::Error::new(e.kind(), format!("Failed to open bgzip writer: {}", e)))?;
@@ -509,15 +503,13 @@ impl Writer<File> {
 }
 
 impl<W: Write> Writer<W> {
-    /// Opens a bgzip writer from a stream and compression level. Maximal compression level is 10.
+    /// Opens a bgzip writer from a stream and compression level. Maximal compression level is 9.
     pub fn from_stream(stream: W, level: u8) -> Self {
-        assert!(level <= 10, "Compression level should be at most 10");
-        let mut compressor = deflate::core::CompressorOxide::new(0);
-        compressor.set_format_and_level(miniz_oxide::DataFormat::Raw, level);
+        assert!(level <= 9, "Compression level should be at most 9");
         Writer {
             stream,
-            compressed_buffer: vec![0; COMPRESSED_BLOCK_SIZE + 1],
-            compressor,
+            compressed_buffer: vec![0; COMPRESSED_BLOCK_SIZE],
+            compression: Compression::new(level as u32),
         }
     }
 
@@ -551,39 +543,16 @@ impl<W: Write> Writer<W> {
                 MAX_BLOCK_SIZE);
         }
 
-        self.compressor.reset();
-        let mut bytes_written = 0;
         let mut crc_hasher = crc32fast::Hasher::new();
-        for (i, subcontents) in contents.iter().enumerate() {
-            if subcontents.len() == 0 {
-                return Err(io::Error::new(ErrorKind::InvalidData,
-                    "bgzip::Writer::write_several: slices cannot be empty."));
+        let bytes_written = {
+            let mut encoder = DeflateEncoder::new(&mut self.compressed_buffer[..], self.compression);
+            for subcontents in contents.iter() {
+                encoder.write_all(subcontents)?;
+                crc_hasher.update(subcontents);
             }
-            let flush = if i == contents.len() - 1 {
-                miniz_oxide::MZFlush::Finish
-            } else {
-                miniz_oxide::MZFlush::Sync
-            };
-            let deflate_res = deflate::stream::deflate(&mut self.compressor, subcontents,
-                &mut self.compressed_buffer[bytes_written..], flush);
-            match deflate_res.status {
-                Ok(miniz_oxide::MZStatus::StreamEnd)
-                    | Ok(miniz_oxide::MZStatus::Ok)
-                    | Err(miniz_oxide::MZError::Buf) => {},
-                Ok(o) => return Err(io::Error::new(ErrorKind::InvalidData,
-                    format!("Could not compress block contents: {:?}", o))),
-                Err(e) => return Err(io::Error::new(ErrorKind::InvalidData,
-                    format!("Could not compress block contents: {:?}", e))),
-            }
-            bytes_written += deflate_res.bytes_written;
-            // Compressed size is too big.
-            if deflate_res.bytes_consumed != subcontents.len() 
-                    || bytes_written > COMPRESSED_BLOCK_SIZE {
-                return Err(io::Error::new(ErrorKind::WriteZero,
-                    "Compressed size is bigger than MAX_BLOCK_SIZE"));
-            }
-            crc_hasher.update(subcontents);
-        }
+            let remaining_buf = encoder.finish()?;
+            CONTENTS_SIZE - remaining_buf.len()
+        };
 
         const BLOCK_HEADER: &[u8; 16] = &[
              31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
