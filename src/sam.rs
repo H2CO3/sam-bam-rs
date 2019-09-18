@@ -90,12 +90,21 @@ impl<W: Write> SamWriter<W> {
     pub fn header(&self) -> &Header {
         &self.header
     }
+
+    /// Flushes contents to output.
+    pub fn flush(&mut self) -> Result<()> {
+        self.stream.flush()
+    }
 }
 
 impl<W: Write> RecordWriter for SamWriter<W> {
     /// Writes a single record in SAM format.
     fn write(&mut self, record: &Record) -> Result<()> {
         record.write_sam(&mut self.stream, &self.header)
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.flush()
     }
 }
 

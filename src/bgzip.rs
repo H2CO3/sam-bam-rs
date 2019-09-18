@@ -579,6 +579,11 @@ impl<W: Write> Writer<W> {
     pub fn write(&mut self, contents: &[u8]) -> io::Result<()> {
         self.write_several(&[contents])
     }
+
+    /// Flushes inner stream.
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 const CONTENTS_SIZE: usize = MAX_BLOCK_SIZE + 1;
@@ -702,7 +707,7 @@ impl<W: Write> Write for SentenceWriter<W> {
         while self.start != self.position {
             self.write_bgzip()?;
         }
-        Ok(())
+        self.writer.flush()
     }
 }
 

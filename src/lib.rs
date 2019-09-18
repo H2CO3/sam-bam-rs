@@ -143,4 +143,7 @@ pub trait RecordReader: Iterator<Item = Result<Record, Error>> {
 pub trait RecordWriter {
     /// Writes a single record.
     fn write(&mut self, record: &Record) -> std::io::Result<()>;
+
+    /// Finishes the stream, same as `std::mem::drop(writer)`, but can return an error.
+    fn finish(&mut self) -> std::io::Result<()>;
 }

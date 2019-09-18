@@ -107,4 +107,8 @@ impl<W: Write> RecordWriter for BamWriter<W> {
         self.writer.end_sentence();
         Ok(())
     }
+
+    fn finish(&mut self) -> Result<()> {
+        self.writer.finish()
+    }
 }
