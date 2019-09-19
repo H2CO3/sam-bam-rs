@@ -1,3 +1,5 @@
+//! Record tags and operations on them.
+
 use std::io::{self, Read, Write};
 use std::io::ErrorKind::InvalidData;
 use std::mem;
@@ -124,9 +126,7 @@ impl<'a> IntArrayView<'a> {
     pub fn at(&self, index: usize) -> i64 {
         let start = self.int_type.size_of() * index;
         let end = start + self.int_type.size_of();
-        if end > self.raw.len() {
-            panic!("Index out of bounds: index {}, len {}", index, self.len());
-        }
+        assert!(end <= self.raw.len(), "Index out of bounds: index {}, len {}", index, self.len());
         self.int_type.parse_raw(&self.raw[start..end])
     }
 
@@ -155,9 +155,7 @@ impl<'a> FloatArrayView<'a> {
     pub fn at(&self, index: usize) -> f32 {
         let start = 4 * index;
         let end = start + 4;
-        if end > self.raw.len() {
-            panic!("Index out of bounds: index {}, len {}", index, self.len());
-        }
+        assert!(end <= self.raw.len(), "Index out of bounds: index {}, len {}", index, self.len());
         parse_float(&self.raw[start..end])
     }
 
@@ -418,6 +416,18 @@ write_value_array!(f32, b'f', write_f32);
 /// Allows to get and modify record tags. Method [get](#method.get) returns a
 /// [TagValue](enum.TagValue.html), which is a viewer of raw data (it does not copy the data,
 /// unless it has a numeric/char type).
+///
+/// ```rust
+/// // Read tag ZZ, which can be either u32 array or a char:
+/// match record.tags().get(b"ZZ") {
+///     Some(TagValue::IntArray(array_view)) => {
+///         assert!(array_view.int_type() == IntegerType::U32);
+///         println!("Array[2] = {}", array_view.at(2));
+///     },
+///     Some(TagValue::Char(value)) => println!("Char = {}", value),
+///     _ => panic!("Unexpected type"),
+/// }
+/// ```
 ///
 /// Methods [push](#method.push) and [insert](#method.insert) add a tag (or modify a tag),
 /// and they provide a convinient way to specify tag type. For numeric and string types, you

@@ -1,3 +1,5 @@
+//! Indexed and consecutive BAM readers.
+
 use std::fs::File;
 use std::io::{Read, Seek, Result, Error, Write};
 use std::io::ErrorKind::InvalidInput;
@@ -29,7 +31,7 @@ impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
                 record.clear();
                 return Err(e);
             }
-            if !record.is_mapped() {
+            if !record.flag().is_mapped() {
                 continue;
             }
             // Reads are sorted, so no more reads would be in the region.
@@ -213,21 +215,21 @@ impl IndexedReaderBuilder {
 /// allows to fetch records from arbitrary positions,
 /// but does not allow to read all records consecutively.
 ///
-/// The following code would load BAM file `test.bam` and its index `test.bam.bai`, take all records
-/// from `2:100001-200000` and print them on the stdout.
+/// The following code would load BAM file `in.bam` and its index `in.bam.bai`, take all records
+/// from `3:600001-700000` and print them on the stdout.
 ///
 /// ```rust
 /// extern crate bam;
 ///
 /// fn main() {
-///     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
+///     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
 ///
 ///     // We need to clone the header to have access to reference names as the
 ///     // reader will be blocked during fetch.
 ///     let header = reader.header().clone();
 ///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
 ///
-///     for record in reader.fetch(1, 100_000, 200_000).unwrap() {
+///     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
 ///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
 ///     }
 /// }
@@ -241,7 +243,7 @@ impl IndexedReaderBuilder {
 /// use bam::RecordReader;
 ///
 /// fn main() {
-///     let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
+///     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
 ///
 ///     let header = reader.header().clone();
 ///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
@@ -262,11 +264,11 @@ impl IndexedReaderBuilder {
 /// If only records with specific MAPQ or FLAGs are needed, you can use `fetch_by`. For example,
 /// ```rust
 /// reader.fetch_by(1, 100_000, 200_000,
-///     |record| record.mapq() >= 30 && !record.is_secondary())
+///     |record| record.mapq() >= 30 && !record.flag().is_secondary())
 /// ```
 /// to load only records with MAPQ at least 30 and skip all secondary alignments. In some cases it
 /// helps to save time by not calculating the right-most aligned read position, as well as
-/// remove additional allocations.
+/// skip unnecessary allocations.
 ///
 /// You can also use [IndexedReaderBuilder](struct.IndexedReaderBuilder.html),
 /// which gives more control over loading
@@ -276,17 +278,17 @@ impl IndexedReaderBuilder {
 /// let mut reader = bam::IndexedReader::build()
 ///     .bai_path("other_dir/test.bai")
 ///     .cache_capacity(10000)
-///     .from_path("test.bam").unwrap();
+///     .from_path("in.bam").unwrap();
 /// ```
 ///
-/// By default, during construction of the `IndexedReader`, we compare modification times of
+/// By default, during the construction of the `IndexedReader`, we compare modification times of
 /// the BAI index and the BAM file. If the index is older, the function returns an error. This can
 /// be changed:
 /// ```rust
 /// use bam::bam_reader::ModificationTime;
 /// let mut reader = bam::IndexedReader::build()
 ///     .modification_time(ModificationTime::warn(|e| eprintln!("{}", e)))
-///     .from_path("test.bam").unwrap();
+///     .from_path("in.bam").unwrap();
 /// ```
 /// You can also ignore the error completely: `.modification_time(ModificationTime::Ignore)`.
 
@@ -378,24 +380,20 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// BAM file reader. In contrast to [IndexedReader](struct.IndexedReader.html) the `BamReader`
 /// allows to read all records consecutively, but does not allow random access.
 ///
-/// Implements [RecordReader](struct.RecordReader.html) trait.
-///
+/// You can iterate over records:
 /// ```rust
 /// extern crate bam;
 ///
 /// fn main() {
-///     let reader = bam::BamReader::from_path("test.bam").unwrap();
-///
-///     let header = reader.header().clone();
-///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
-///
+///     let reader = bam::BamReader::from_path("in.bam").unwrap();
 ///     for record in reader {
-///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
+///         let record = record.unwrap();
+///         // Do something.
 ///     }
 /// }
 /// ```
 ///
-/// You can skip excessive record allocation using `read_into`:
+/// Alternatively, you can skip excessive record allocation using `read_into`:
 /// ```rust
 /// extern crate bam;
 ///
@@ -403,11 +401,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// use bam::RecordReader;
 ///
 /// fn main() {
-///     let mut reader = bam::BamReader::from_path("test.bam").unwrap();
-///
-///     let header = reader.header().clone();
-///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
-///
+///     let mut reader = bam::BamReader::from_path("in.bam").unwrap();
 ///     let mut record = bam::Record::new();
 ///     loop {
 ///         match reader.read_into(&mut record) {
@@ -415,7 +409,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 ///             Err(bam::Error::NoMoreRecords) => break,
 ///             Err(e) => panic!("{}", e),
 ///         }
-///         record.write_sam(&mut stdout, &header).unwrap();
+///         // Do something.
 ///     }
 /// }
 /// ```
@@ -442,9 +436,7 @@ impl<R: Read> BamReader<R> {
             bgzip_reader, header,
         })
     }
-}
 
-impl<R: Read> BamReader<R> {
     /// Returns [header](../header/struct.Header.html)
     pub fn header(&self) -> &Header {
         &self.header

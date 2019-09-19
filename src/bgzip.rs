@@ -1,3 +1,24 @@
+//! Bgzip files (BGZF) and bgzip blocks.
+//!
+//! This modules contains several readers and writers of Bgzip files:
+//!
+//! # Readers
+//!
+//! * [Consecutive Reader](struct.ConsecutiveReader.html) - reads bgzip file consecutively.
+//! * [Seek Reader](struct.SeekReader.html) - seeks and reads bgzip blocks given an offset.
+//! * [Chunks Reader](struct.ChunksReader.html) - wrapper around the
+//! [Seek Reader](struct.SeekReader.html),
+//! that reads multiple blocks given a vector of [chunks](../index/struct.Chunk.html).
+//!
+//! # Writers
+//!
+//! * [Writer](struct.Writer.html) - writes whole bgzip blocks.
+//! * [Sentence Writer](struct.SentenceWriter.html) - wrapper around the
+//! [Writer](struct.Writer.html), that implements the `Write` trait. In addition, it allows
+//! to *end sentences* - marks points, in which it is preferable to break the stream and start a
+//! new bgzip block. For example, each BAM record represents a separate sentence, and
+//! `SentenceWriter` will try not to split a record between two blocks.
+
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::io::ErrorKind;
@@ -75,7 +96,7 @@ impl Debug for BlockError {
     }
 }
 
-/// BGzip block. Both uncompressed and compressed size should not be bigger than
+/// Bgzip block. Both uncompressed and compressed size should not be bigger than
 /// `MAX_BLOCK_SIZE = 65536`.
 pub struct Block {
     block_size: usize,
@@ -246,7 +267,7 @@ impl SeekReaderBuilder {
     }
 }
 
-/// BGzip file reader, which allows to open bgzip blocks given an offset.
+/// Bgzip file reader, which allows to open bgzip blocks given an offset.
 pub struct SeekReader<R: Read + Seek> {
     stream: R,
     cache: LruCache<u64, Block>,
@@ -277,7 +298,7 @@ impl<R: Read + Seek> SeekReader<R> {
     }
 
     /// Get a bgzip block using `offset` into the file.
-    /// Blocks are cached, so it should be unexpensive to consecutively ask for the same blocks.
+    /// Blocks are cached, so it should be inexpensive to consecutively ask for the same blocks.
     pub fn get_block<'a>(&'a mut self, offset: u64) -> io::Result<&'a Block> {
         if self.cache.contains_key(&offset) {
             return Ok(self.cache.get_mut(&offset)
@@ -415,7 +436,7 @@ impl<'a, R: Read + Seek> Read for ChunksReader<'a, R> {
     }
 }
 
-/// Consecutive reader of a bgzip file, does not support random access, but also does not
+/// Consecutive reader of a bgzip file, it does not support random access, but also does not
 /// spend memory and time on caching.
 pub struct ConsecutiveReader<R: Read> {
     stream: R,
@@ -526,22 +547,15 @@ impl<W: Write> Writer<W> {
     ///
     /// Sum length of the `contents` should be at most `MAX_BLOCK_SIZE = 65536`.
     ///
-    /// # Errors
-    ///
     /// If the compressed block is bigger than `MAX_BLOCK_SIZE`, the function returns an error
     /// `WriteZero`.
-    ///
-    /// The function can return an error `InvalidData` if the any slice in `contents` has length 0,
-    /// and sum length is positive.
     pub fn write_several(&mut self, contents: &[&[u8]]) -> io::Result<()> {
         let contents_size: usize = contents.iter().map(|slice| slice.len()).sum();
         if contents_size == 0 {
             return self.write_empty();
         }
-        if contents_size > MAX_BLOCK_SIZE {
-            panic!("Cannot write a block: uncompressed size {} > {}", contents_size,
-                MAX_BLOCK_SIZE);
-        }
+        assert!(contents_size <= MAX_BLOCK_SIZE, "Cannot write a block: uncompressed size {} > {}",
+            contents_size, MAX_BLOCK_SIZE);
 
         let mut crc_hasher = crc32fast::Hasher::new();
         let bytes_written = {
@@ -596,8 +610,8 @@ const CONTENTS_SIZE: usize = MAX_BLOCK_SIZE + 1;
 /// a single sentence). Method `flush` ignores sentences and immediately writes
 /// the remaining buffer.
 ///
-/// The `SentenceWriter` will then try to start new bgzip blocks only when a new sentence starts.
-/// Several sentences can still get to the same bgzip block, if they are small enough.
+/// The `SentenceWriter` will try to start new bgzip blocks only when a new sentence starts.
+/// The writer still puts several sentences in the same bgzip block, if possible.
 pub struct SentenceWriter<W: Write> {
     writer: Writer<W>,
     contents: Vec<u8>,
@@ -619,7 +633,7 @@ impl<W: Write> SentenceWriter<W> {
         }
     }
 
-    /// End the current sentence.
+    /// Ends the current sentence.
     pub fn end_sentence(&mut self) {
         self.end = Some(self.position);
     }
@@ -650,7 +664,7 @@ impl<W: Write> SentenceWriter<W> {
         let mut write_len = self.get_len(self.position);
         if let Some(end) = self.end {
             let end_len = self.get_len(end);
-            if end_len >= write_len / 3 {
+            if end_len >= write_len / 2 {
                 // Block until sentence end is not too small.
                 write_len = end_len;
             }

@@ -1,3 +1,5 @@
+//! BAM writer.
+
 use std::io::{Write, BufWriter, Result};
 use std::fs::File;
 use std::path::Path;
@@ -8,7 +10,7 @@ use super::{Header, Record, RecordWriter};
 /// Builder of the [BamWriter](struct.BamWriter.html).
 pub struct BamWriterBuilder {
     header: Option<Header>,
-    skip_header: bool,
+    write_header: bool,
     level: u8,
 }
 
@@ -16,7 +18,7 @@ impl BamWriterBuilder {
     pub fn new() -> Self {
         Self {
             header: None,
-            skip_header: false,
+            write_header: true,
             level: 6,
         }
     }
@@ -27,9 +29,9 @@ impl BamWriterBuilder {
         self
     }
 
-    /// Option to skip header when creating the BAM writer (false by default).
-    pub fn skip_header(&mut self, skip: bool) -> &mut Self {
-        self.skip_header = skip;
+    /// The option to write or skip header when creating the BAM writer (writing by default).
+    pub fn write_header(&mut self, write: bool) -> &mut Self {
+        self.write_header = write;
         self
     }
 
@@ -63,7 +65,7 @@ impl BamWriterBuilder {
         };
         let mut writer = bgzip::SentenceWriter::new(
             bgzip::Writer::from_stream(stream, self.level));
-        if !self.skip_header {
+        if self.write_header {
             header.write_bam(&mut writer)?;
         }
         writer.flush()?;

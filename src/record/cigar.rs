@@ -1,3 +1,5 @@
+//! Cigar and operations on it.
+
 use std::io::{self, Write};
 use std::fmt::{self, Display, Formatter};
 use std::slice::Iter;
@@ -168,7 +170,7 @@ impl Cigar {
     pub(crate) fn fill_from<R: ReadBytesExt>(&mut self, stream: &mut R, len: usize)
             -> io::Result<()> {
         unsafe {
-            super::record::resize(&mut self.0, len);
+            super::resize(&mut self.0, len);
         }
         stream.read_u32_into::<LittleEndian>(&mut self.0)?;
         Ok(())

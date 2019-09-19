@@ -1,6 +1,4 @@
-*bam* is a crate that allows to read BAM files, written completely in Rust. Currently, it
-allows to read BAM files in *indexed* and *consecutive* modes (`bam::IndexedReader`
-and `bam::Reader`). The future versions will support writing BAM files.
+*bam* is a crate that allows to read BAM files, written completely in Rust.
 
 ## Why?
 
@@ -9,46 +7,43 @@ Additionally, it removes the need to install additional C libraries.
 
 Errors produced by this crate are more readable and easier to catch and fix on-the-fly.
 
+## Overview
+
+Currently, there are three readers and two writers:
+* `bam::IndexedReader` - fetches records from
+random genomic regions.
+* `bam::BamReader` - reads a BAM file consecutively.
+* `bam::SamReader` - reads a SAM file consecutively.
+* `bam::BamWriter` - writes a BAM file.
+* `bam::SamWriter` - writes a SAM file.
+
+The `bgzip` module contains bgzip readers and writers.
+
+The crate also allows to conviniently work with SAM/BAM `records`
+and their fields, such as `CIGAR` or `tags`.
+
 ## Usage
 
-Currently, there are two readers:
-* `bam::IndexedReader`, which allows to fetch records from
-random genomic regions,
-* `bam::Reader`, which allows to read the BAM file consecutively.
-
-The following code would load BAM file `test.bam` and its index `test.bam.bai`, take all records
-from `2:100001-200000` and print them on the stdout.
+The following code would load BAM file `in.bam` and its index `in.bam.bai`, take all records
+from `3:600001-700000` and print them on the stdout.
 
 ```rust
 extern crate bam;
 
-fn main() {
-    let mut reader = bam::IndexedReader::from_path("test.bam").unwrap();
-
-    // We need to clone the header to have access to reference names as the
-    // reader will be blocked during fetch.
-    let header = reader.header().clone();
-    let mut stdout = std::io::BufWriter::new(std::io::stdout());
-
-    for record in reader.fetch(1, 100_000, 200_000).unwrap() {
-        record.unwrap().write_sam(&mut stdout, &header).unwrap();
-    }
-}
-```
-
-The following code will print the whole contents of `test.bam`:
-
-```rust
-extern crate bam;
+use std::io;
+use bam::RecordWriter;
 
 fn main() {
-    let reader = bam::Reader::from_path("test.bam").unwrap();
+    let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
+    let output = io::BufWriter::new(io::stdout());
+    let mut writer = bam::SamWriter::build()
+        .header(reader.header().clone())
+        .write_header(false)
+        .from_stream(output).unwrap();
 
-    let header = reader.header().clone();
-    let mut stdout = std::io::BufWriter::new(std::io::stdout());
-
-    for record in reader {
-        record.unwrap().write_sam(&mut stdout, &header).unwrap();
+    for record in reader.fetch(2, 600_000, 700_000).unwrap() {
+        let record = record.unwrap();
+        writer.write(&record).unwrap();
     }
 }
 ```
@@ -56,19 +51,8 @@ fn main() {
 You can find more detailed usage [here](https://docs.rs/bam).
 
 ## Changelog
-* 0.0.5 - Improved interaction with tags, in addition:
-    - now `fetch` and `fetch_by` return an error, if the fetched region is out of bounds,
-    - during the construction of `IndexedReader`, you can specify how to handle a situation when
-    BAI index is younger than a BAM file (ignore, return error, warn).
-* 0.0.4 - Bug fixes, optimized writing in SAM format,
-* 0.0.3 - Switched to a new `inflate` crate, additional reading speedup,
-* 0.0.2 - Support for consecutive reader `bam::Reader`,
-and a `bam::RecordReader` trait.
-* 0.0.1 - Support for indexed reader `bam::IndexedReader`.
+You can find changelog [here](https://gitlab.com/tprodanov/bam/-/releases).
 
 ## Future versions
-* Support for `bam::Writer`,
-* Optimized writing of SAM records,
 * Support for multi-thread loading and writing,
-* Additional features for `bam::Record`
-and other structures, like `Cigar`.
+* Speed optimizations.

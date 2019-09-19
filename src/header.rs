@@ -1,3 +1,5 @@
+//! SAM/BAM header.
+
 use std::io::{Write, Read, Result, Error};
 use std::io::ErrorKind::InvalidData;
 use std::string::String;
@@ -29,6 +31,10 @@ impl Tag {
 
     pub fn value(&self) -> &str {
         &self.value
+    }
+
+    pub fn value_mut(&mut self) -> &mut String {
+        &mut self.value
     }
 
     /// Sets a new value and returns an old one.
@@ -83,8 +89,8 @@ impl EntryType {
 
 /// A single header line.
 ///
-/// You can create a new entry using [new_header_line](#method.new_header_line),
-/// [new_ref_sequence](#method.new_ref_sequence) and so on. After that you can modify line tags
+/// You can create a new entry using [header_line](#method.header_line),
+/// [ref_sequence](#method.ref_sequence) and so on. After that you can modify line tags
 /// using [push](#method.push), [remove](#method.remove) and others.
 ///
 /// However, be careful not to delete the required tag, as well as check the required tag format.
@@ -103,14 +109,14 @@ impl HeaderEntry {
     }
 
     /// Creates a new @HD header entry.
-    pub fn new_header_line(version: String) -> HeaderEntry {
+    pub fn header_line(version: String) -> HeaderEntry {
         let mut res = HeaderEntry::new(EntryType::HeaderLine);
         res.push(b"VN", version);
         res
     }
 
     /// Creates a new @SQ header entry.
-    pub fn new_ref_sequence(seq_name: String, seq_len: u32) -> HeaderEntry {
+    pub fn ref_sequence(seq_name: String, seq_len: u32) -> HeaderEntry {
         let mut res = HeaderEntry::new(EntryType::RefSequence);
         res.push(b"SN", seq_name);
         res.push(b"LN", seq_len.to_string());
@@ -118,14 +124,14 @@ impl HeaderEntry {
     }
 
     /// Creates a new @RG header entry.
-    pub fn new_read_group(ident: String) -> HeaderEntry {
+    pub fn read_group(ident: String) -> HeaderEntry {
         let mut res = HeaderEntry::new(EntryType::ReadGroup);
         res.push(b"ID", ident);
         res
     }
 
     /// Creates a new @PG header entry.
-    pub fn new_program(ident: String) -> HeaderEntry {
+    pub fn program(ident: String) -> HeaderEntry {
         let mut res = HeaderEntry::new(EntryType::Program);
         res.push(b"ID", ident);
         res
@@ -140,10 +146,10 @@ impl HeaderEntry {
         self.entry_type.name()
     }
 
-    /// Returns all tags in a line.
-    // fn tags(&self) -> &[Tag];
-    // /// Returns mutable tags in a line.
-    // fn tags_mut(&mut self) -> &mut Vec<Tag>;
+    /// Returns an iterator over all tags.
+    pub fn iter(&self) -> std::slice::Iter<Tag> {
+        self.tags.iter()
+    }
 
     /// Returns a tag with `name` if present. Takes `O(n_tags)`.
     pub fn get(&self, name: &TagName) -> Option<&str> {
@@ -156,7 +162,7 @@ impl HeaderEntry {
     }
 
     /// Returns a mutable tag with `name` if present. Takes `O(n_tags)`.
-    pub fn get_mut(&mut self, name: &TagName) -> Option<&mut str> {
+    pub fn get_mut(&mut self, name: &TagName) -> Option<&mut String> {
         for tag in self.tags.iter_mut() {
             if &tag.name == name {
                 return Some(&mut tag.value);
@@ -193,6 +199,7 @@ impl HeaderEntry {
         None
     }
 
+    /// Returns the number of tags in the line.
     pub fn len(&self) -> usize {
         self.tags.len()
     }
@@ -241,10 +248,12 @@ pub enum HeaderLine {
     Comment(String),
 }
 
-/// A single header line. Can be a [HeaderEntry](struct.HeaderEntry.html) or a string comment.
+/// BAM/SAM Header.
 ///
-/// You cannot remove lines from the header, but you can create a new header and a subset of
-/// lines there.
+/// You can modify it by pushing new lines using [push_entry](#method.push_entry),
+/// [push_comment](#method.push_line) and [push_line](#method.push_line).
+///
+/// You cannot remove lines, but you can create a new header and push there only a subset of lines.
 #[derive(Clone)]
 pub struct Header {
     lines: Vec<HeaderLine>,
@@ -270,6 +279,8 @@ impl Header {
     }
 
     /// Pushes a new header entry.
+    ///
+    /// Returns an error if the same reference appears twice or @SQ line has an incorrect format.
     pub fn push_entry(&mut self, entry: HeaderEntry) -> std::result::Result<(), String> {
         if entry.entry_type() == EntryType::RefSequence {
             let name = entry.get(b"SN")
@@ -295,6 +306,20 @@ impl Header {
     /// Pushes a new comment.
     pub fn push_comment(&mut self, comment: String) {
         self.lines.push(HeaderLine::Comment(comment));
+    }
+
+    /// Pushes a lines to the header.
+    pub fn push_line(&mut self, line: &str) -> Result<()> {
+        if line.starts_with("@CO") {
+            let comment = line.splitn(2, '\t').skip(1).next()
+                .ok_or_else(|| Error::new(InvalidData,
+                    format!("Failed to parse comment line '{}'", line)))?;
+            self.push_comment(comment.to_string());
+        } else {
+            self.push_entry(HeaderEntry::parse_line(line)?)
+                .map_err(|e| Error::new(InvalidData, e))?;
+        }
+        Ok(())
     }
 
     /// Write header in SAM format.
@@ -329,20 +354,7 @@ impl Header {
         Ok(())
     }
 
-    pub fn push_line(&mut self, line: &str) -> Result<()> {
-        if line.starts_with("@CO") {
-            let comment = line.splitn(2, '\t').skip(1).next()
-                .ok_or_else(|| Error::new(InvalidData,
-                    format!("Failed to parse comment line '{}'", line)))?;
-            self.push_comment(comment.to_string());
-        } else {
-            self.push_entry(HeaderEntry::parse_line(line)?)
-                .map_err(|e| Error::new(InvalidData, e))?;
-        }
-        Ok(())
-    }
-
-    /// Parse uncompressed BAM header, starting with magic b"BAM\1".
+    /// Parse uncompressed BAM header, starting with magic `b"BAM\1"`.
     pub fn from_bam<R: Read>(stream: &mut R) -> Result<Self> {
         let mut magic = [0_u8; 4];
         stream.read_exact(&mut magic)?;

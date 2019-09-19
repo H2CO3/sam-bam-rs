@@ -1,3 +1,5 @@
+//! BAI index, virtual offset and bgzip chunks.
+
 use std::io::{Result, Error, Read};
 use std::io::ErrorKind::InvalidData;
 use std::path::Path;
@@ -38,7 +40,7 @@ impl VirtualOffset {
         self.0
     }
 
-    /// Get the block offset. Represents the offset in the BGzip file to the beginning of the block.
+    /// Get the block offset. Represents the offset in the Bgzip file to the beginning of the block.
     pub fn block_offset(&self) -> u64 {
         self.0 >> 16
     }
@@ -60,7 +62,7 @@ impl Display for VirtualOffset {
     }
 }
 
-/// Chunk `[start-end)`, where `start` and `end` are virtual offsets.
+/// Chunk `[start-end)`, where `start` and `end` are [virtual offsets](struct.VirtualOffset.html).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Chunk {
     start: VirtualOffset,
@@ -88,7 +90,7 @@ impl Chunk {
         self.start < other.end && other.start < self.end
     }
 
-    /// Combine two intersecting chunks. Fails if chunks do not intersect.
+    /// Combine two intersecting chunks. Panics if chunks do not intersect.
     pub fn combine(&self, other: &Chunk) -> Chunk {
         assert!(self.intersects(other), "Cannot combine non-intersecting chunks");
         Chunk {
@@ -97,12 +99,10 @@ impl Chunk {
         }
     }
 
-    /// Chunk start.
     pub fn start(&self) -> VirtualOffset {
         self.start
     }
 
-    /// Chunk end.
     pub fn end(&self) -> VirtualOffset {
         self.end
     }
@@ -175,7 +175,8 @@ impl Display for Reference {
     }
 }
 
-/// BAI Index.
+/// BAI Index. Allows to get chunks in a bgzip file, that contain records from a specific genomic
+/// region.
 pub struct Index {
     references: Vec<Reference>,
     n_unmapped: Option<u64>,
@@ -246,7 +247,7 @@ impl Display for Index {
     }
 }
 
-/// Get BAI bin for the record with alignment `[beg-end)`.
+/// Returns a BAI bin for the record with alignment `[beg-end)`.
 pub fn region_to_bin(beg: i32, end: i32) -> u32 {
     let end = end - 1;
     let mut res = 0_i32;
@@ -259,7 +260,7 @@ pub fn region_to_bin(beg: i32, end: i32) -> u32 {
     res as u32
 }
 
-/// Get all possible BAI bins for the region `[beg-end)`.
+/// Returns all possible BAI bins for the region `[beg-end)`.
 pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
     let end = end - 1;
     let mut res = vec![0];
@@ -276,7 +277,7 @@ pub fn region_to_bins(beg: i32, end: i32) -> Vec<u32> {
 /// Maximal possible bin value
 pub const MAX_BIN: u16 = 37448;
 
-/// Return a maximal region for a given bin
+/// Returns a maximal region for a given bin
 pub fn bin_to_region(bin: u16) -> (i32, i32) {
     if bin == 0 {
         return (std::i32::MIN, std::i32::MAX);

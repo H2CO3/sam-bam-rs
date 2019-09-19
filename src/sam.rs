@@ -1,3 +1,17 @@
+//! SAM reader and writer.
+//!
+//! Contains a [SAM reader](struct.SamReader.html) and [SAM writer](struct.SamWriter.html).
+//! You can construct them as
+//!
+//! ```rust
+//! let reader = SamReader::from_path("in.sam").unwrap();
+//! let writer = SamWriter::from_path("out.sam", reader.header().clone()).unwrap();
+//! ```
+//!
+//! The reader implements [RecordReader](../trait.RecordReader.html) trait,
+//! and the writer implements [RecordWriter](../trait.RecordWriter.html) trait. See them for
+//! more information.
+
 use std::io::{Write, BufWriter, Result, BufReader, BufRead};
 use std::fs::File;
 use std::path::Path;
@@ -10,14 +24,14 @@ use super::{RecordReader, RecordWriter};
 /// Builder of the [SamWriter](struct.SamWriter.html).
 pub struct SamWriterBuilder {
     header: Option<Header>,
-    skip_header: bool,
+    write_header: bool,
 }
 
 impl SamWriterBuilder {
     pub fn new() -> Self {
         Self {
             header: None,
-            skip_header: false,
+            write_header: true,
         }
     }
 
@@ -27,9 +41,9 @@ impl SamWriterBuilder {
         self
     }
 
-    /// Option to skip header when creating the SAM writer (false by default).
-    pub fn skip_header(&mut self, skip: bool) -> &mut Self {
-        self.skip_header = skip;
+    /// The option to write or skip header when creating the SAM writer (writing by default).
+    pub fn write_header(&mut self, write: bool) -> &mut Self {
+        self.write_header = write;
         self
     }
 
@@ -54,7 +68,7 @@ impl SamWriterBuilder {
             None => panic!("Cannot construct SAM writer without a header"),
             Some(header) => header,
         };
-        if !self.skip_header {
+        if self.write_header {
             header.write_text(&mut stream)?;
         }
         Ok(SamWriter { stream, header })
@@ -62,6 +76,30 @@ impl SamWriterBuilder {
 }
 
 /// Writes records in SAM format.
+///
+/// Can be created as
+/// ```rust
+/// let writer = SamWriter::from_path("out.sam", header).unwrap();
+/// ```
+/// or using a [builder](struct.SamWriterBuilder.html)
+/// ```rust
+/// let writer = SamWriter::build()
+///     .header(header)
+///     .from_path("out.sam").unwrap();
+/// ```
+///
+/// You can clone a [header](../header/struct.Header.html) from SAM/BAM reader or
+/// create one yourself.
+///
+/// You need to import [RecordWriter](../trait.RecordWriter.html)
+/// to write [records](../record/struct.Record.html):
+/// ```rust
+/// use bam::RecordWriter;
+/// let mut writer = bam::SamWriter::from_path("out.sam", header).unwrap();
+/// let mut record = bam::Record::new();
+/// // Filling the record.
+/// writer.write(&record).unwrap();
+/// ```
 pub struct SamWriter<W: Write> {
     stream: W,
     header: Header,
@@ -109,6 +147,22 @@ impl<W: Write> RecordWriter for SamWriter<W> {
 }
 
 /// Reads records from SAM format.
+///
+/// Can be opened as
+/// ```rust
+/// let reader = SamReader::from_path("in.sam").unwrap();
+/// ```
+///
+/// You can iterate over records:
+/// ```rust
+/// let mut reader = bam::SamReader::from_path("in.sam").unwrap();
+/// for record in reader {
+///     let record = record.unwrap();
+///     // Do something.
+/// }
+/// ```
+/// You can use [RecordReader](../trait.RecordReader.html) trait to read records without excess
+/// allocation.
 pub struct SamReader<R: BufRead> {
     stream: R,
     header: Header,
