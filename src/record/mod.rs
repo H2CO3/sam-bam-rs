@@ -2,6 +2,7 @@ use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::fmt::{self, Display, Debug, Formatter};
 use std::cell::Cell;
+use std::ops::RangeBounds;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
@@ -108,7 +109,7 @@ impl Sequence {
     }
 
     /// Returns a nucleotide at the position `index`, represented by a single byte, O(1).
-    /// If nucleotide is not `A`, `C`, `G` or `T`, the function returns `N`.
+    /// If the nucleotide is not `A`, `C`, `G` or `T`, the function returns `N`.
     pub fn at_acgtn_only(&self, index: usize) -> u8 {
         if index >= self.len {
             panic!("Index out of range ({} >= {})", index, self.len);
@@ -119,6 +120,108 @@ impl Sequence {
             self.raw[index / 2] & 0x0f
         };
         b"NACNGNNNTNNNNNNN"[nt as usize]
+    }
+
+    /// Returns an iterator over a subsequence.
+    pub fn subseq<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
+        use std::ops::Bound::*;
+        let start = match range.start_bound() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => self.len,
+        };
+        assert!(start <= end);
+        assert!(end <= self.len);
+        (start..end).map(move |i| self.at(i))
+    }
+
+    /// Returns an iterator over a subsequence using only nucleotides A, C, G, T and N.
+    pub fn subseq_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
+            -> impl Iterator<Item = u8> + '_ {
+        use std::ops::Bound::*;
+        let start = match range.start_bound() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => self.len,
+        };
+        assert!(start <= end);
+        assert!(end <= self.len);
+        (start..end).map(move |i| self.at_acgtn_only(i))
+    }
+
+    /// Returns an iterator over a reverse complement of a subsequence.
+    pub fn rev_compl<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
+        use std::ops::Bound::*;
+        let start = match range.start_bound() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => self.len,
+        };
+        assert!(start <= end);
+        assert!(end <= self.len);
+        (start..end).rev().map(move |i| self.compl_at(i))
+    }
+
+    /// Returns an iterator over a reverse complement of a subsequence using only
+    /// nucleotides A, C, G, T and N.
+    pub fn rev_compl_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
+            -> impl Iterator<Item = u8> + '_ {
+        use std::ops::Bound::*;
+        let start = match range.start_bound() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => self.len,
+        };
+        assert!(start <= end);
+        assert!(end <= self.len);
+        (start..end).rev().map(move |i| self.compl_at_acgtn_only(i))
+    }
+
+    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
+    pub fn compl_at(&self, index: usize) -> u8 {
+        if index >= self.len {
+            panic!("Index out of range ({} >= {})", index, self.len);
+        }
+        let nt = if index % 2 == 0 {
+            self.raw[index / 2] >> 4
+        } else {
+            self.raw[index / 2] & 0x0f
+        };
+        b"=TGKCYSBAWRDMHVN"[nt as usize]
+    }
+
+    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
+    /// If the nucleotide is not `A`, `C`, `G` or `T`, the function returns `N`.
+    pub fn compl_at_acgtn_only(&self, index: usize) -> u8 {
+        if index >= self.len {
+            panic!("Index out of range ({} >= {})", index, self.len);
+        }
+        let nt = if index % 2 == 0 {
+            self.raw[index / 2] >> 4
+        } else {
+            self.raw[index / 2] & 0x0f
+        };
+        b"NTGNCNNNANNNNNNN"[nt as usize]
     }
 
     /// Writes in human readable format. Writes `*` if empty.
@@ -915,5 +1018,24 @@ impl Record {
 
     pub fn is_supplementary(&self) -> bool {
         self.flag & SUPPLEMENTARY != 0
+    }
+
+    /// Returns an iterator over pairs `(Option<u32>, Option<u32>)`.
+    /// The first element represents a sequence index, and the second element represents a
+    /// reference index. If the current operation is an insertion or a deletion, the respective
+    /// element will be `None.`
+    ///
+    /// If the record is unmapped, returns an empty iterator.
+    pub fn aligned_pairs(&self) -> cigar::AlignedPairs {
+        self.cigar.aligned_pairs(self.start as u32)
+    }
+
+    /// Returns an iterator over pairs `(u32, u32)`.
+    /// The first element represents a sequence index, and the second element represents a
+    /// reference index. This iterator skips insertions and deletions.
+    ///
+    /// If the record is unmapped, returns an empty iterator.
+    pub fn matched_pairs(&self) -> cigar::MatchedPairs {
+        self.cigar.matched_pairs(self.start as u32)
     }
 }

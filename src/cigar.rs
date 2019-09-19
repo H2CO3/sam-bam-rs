@@ -1,11 +1,11 @@
 use std::io::{self, Write};
 use std::fmt::{self, Display, Formatter};
+use std::slice::Iter;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 /// Cigar operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
 pub enum Operation {
     AlnMatch = 0,
     Insertion = 1,
@@ -46,7 +46,7 @@ impl Operation {
     }
 
     /// Checks if the operation consumes query. For example, `M` consumes query, while `D` does not.
-    pub fn consumes_query(&self) -> bool {
+    pub fn consumes_query(self) -> bool {
         match self {
             Operation::AlnMatch
             | Operation::Insertion
@@ -59,7 +59,7 @@ impl Operation {
 
     /// Checks if the operation consumes reference.
     /// For example, `M` consumes reference, while `I` does not.
-    pub fn consumes_ref(&self) -> bool {
+    pub fn consumes_ref(self) -> bool {
         match self {
             Operation::AlnMatch
             | Operation::Deletion
@@ -67,6 +67,38 @@ impl Operation {
             | Operation::SeqMatch
             | Operation::SeqMismatch => true,
             _ => false
+        }
+    }
+
+    /// Returns `true` if the operation consumes both query and reference (M, = or X).
+    pub fn is_match(self) -> bool {
+        match self {
+            Operation::AlnMatch | Operation::SeqMatch | Operation::SeqMismatch => true,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if the operation consumes only reference (I or S).
+    pub fn is_insertion(self) -> bool {
+        match self {
+            Operation::Insertion | Operation::Soft => true,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if the operation consumes only query (D or N).
+    pub fn is_deletion(self) -> bool {
+        match self {
+            Operation::Deletion | Operation::Skip => true,
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if the operation does not consume query nor reference (H or P).
+    pub fn is_hard_clipping(self) -> bool {
+        match self {
+            Operation::Hard | Operation::Padding => true,
+            _ => false,
         }
     }
 }
@@ -199,6 +231,101 @@ impl Cigar {
             f.write_u8(op.to_byte())?;
         }
         Ok(())
+    }
+
+    pub(crate) fn aligned_pairs(&self, r_pos: u32) -> AlignedPairs {
+        AlignedPairs {
+            raw_iter: self.0.iter(),
+            q_pos: 0,
+            r_pos,
+            remaining_len: 0,
+            operation: Operation::AlnMatch,
+        }
+    }
+
+    pub(crate) fn matched_pairs(&self, r_pos: u32) -> MatchedPairs {
+        MatchedPairs {
+            raw_iter: self.0.iter(),
+            q_pos: 0,
+            r_pos,
+            remaining_len: 0,
+        }
+    }
+}
+
+/// Iterator over pairs `(Option<u32>, Option<u32>)`.
+/// The first element represents a sequence index, and the second element represents a
+/// reference index. If the current operation is an insertion or a deletion, the respective
+/// element will be `None.`
+pub struct AlignedPairs<'a> {
+    raw_iter: Iter<'a, u32>,
+    q_pos: u32,
+    r_pos: u32,
+    remaining_len: u32,
+    operation: Operation,
+}
+
+impl<'a> Iterator for AlignedPairs<'a> {
+    type Item = (Option<u32>, Option<u32>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.remaining_len == 0 {
+            let v = self.raw_iter.next()?;
+            self.operation = Operation::from(v & 0xf);
+            if !self.operation.is_hard_clipping() {
+                self.remaining_len = v >> 4;
+                break;
+            }
+        }
+        self.remaining_len -= 1;
+        let q_pos = if self.operation.consumes_query() {
+            self.q_pos += 1;
+            Some(self.q_pos - 1)
+        } else {
+            None
+        };
+        let r_pos = if self.operation.consumes_query() {
+            self.r_pos += 1;
+            Some(self.r_pos - 1)
+        } else {
+            None
+        };
+        Some((q_pos, r_pos))
+    }
+}
+
+/// Iterator over pairs `(u32, u32)`.
+/// The first element represents a sequence index, and the second element represents a
+/// reference index. This iterator skips insertions and deletions.
+pub struct MatchedPairs<'a> {
+    raw_iter: Iter<'a, u32>,
+    q_pos: u32,
+    r_pos: u32,
+    remaining_len: u32,
+}
+
+impl<'a> Iterator for MatchedPairs<'a> {
+    type Item = (u32, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use Operation::*;
+
+        while self.remaining_len == 0 {
+            let v = self.raw_iter.next()?;
+            let operation = Operation::from(v & 0xf);
+            let op_len = v >> 4;
+            match operation {
+                AlnMatch | SeqMatch | SeqMismatch => self.remaining_len = v >> 4,
+                Insertion | Soft => self.q_pos += op_len,
+                Deletion | Skip => self.r_pos += op_len,
+                _ => {},
+            }
+        }
+
+        self.remaining_len -= 1;
+        self.q_pos += 1;
+        self.r_pos += 1;
+        Some((self.q_pos - 1, self.r_pos - 1))
     }
 }
 
