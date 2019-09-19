@@ -84,6 +84,11 @@ impl Sequence {
         self.len
     }
 
+    /// Returns `true`, if the sequence is not present.
+    pub fn unavailable(&self) -> bool {
+        self.len == 0
+    }
+
     /// Returns transformed data, each byte is a single nucleotde, O(n).
     pub fn to_vec(&self) -> Vec<u8> {
         (0..self.len).map(|i| self.at(i)).collect()
@@ -268,7 +273,7 @@ impl Qualities {
 
     /// Returns 0 if qualities are not available.
     pub fn len(&self) -> usize {
-        if self.is_empty() {
+        if self.unavailable() {
             0
         } else {
             self.raw.len()
@@ -277,7 +282,7 @@ impl Qualities {
 
     /// Returns `true` if raw qualities have length 0 or are filled with `0xff`.
     /// Only the first element is checked, O(1).
-    pub fn is_empty(&self) -> bool {
+    pub fn unavailable(&self) -> bool {
         self.raw.len() == 0 || self.raw[0] == 0xff
     }
 
@@ -288,7 +293,7 @@ impl Qualities {
 
     /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
     pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.is_empty() {
+        if self.unavailable() {
             return f.write_u8(b'*');
         }
         write_iterator(f, self.raw.iter().map(|qual| qual + 33))
@@ -657,7 +662,7 @@ impl Record {
 
     /// Returns record qualities, if present.
     pub fn qualities(&self) -> Option<&Qualities> {
-        if self.qual.is_empty() {
+        if self.qual.unavailable() {
             None
         } else {
             Some(&self.qual)
@@ -1008,16 +1013,137 @@ impl Record {
         self.flag & SECONDARY != 0
     }
 
+    /// Returns `true` if the record fails filters, such as platform/vendor quality controls.
     pub fn fails_quality_controls(&self) -> bool {
         self.flag & READ_FAILS_QC != 0
     }
 
+    /// Returns `true` if the record is PCR or optical duplicate.
     pub fn is_duplicate(&self) -> bool {
         self.flag & PCR_OR_OPTICAL_DUPLICATE != 0
     }
 
     pub fn is_supplementary(&self) -> bool {
         self.flag & SUPPLEMENTARY != 0
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    pub fn set_paired(&mut self, paired: bool) {
+        if paired {
+            self.flag |= READ_PAIRED;
+        } else {
+            self.flag &= !READ_PAIRED;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    pub fn set_all_segments_aligned(&mut self, all_segments_aligned: bool) {
+        if all_segments_aligned {
+            self.flag |= ALL_SEGMENTS_ALIGNED;
+        } else {
+            self.flag &= !ALL_SEGMENTS_ALIGNED;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    pub fn set_mapped(&mut self, mapped: bool) {
+        if mapped {
+            self.flag &= !READ_UNMAPPED;
+        } else {
+            self.flag |= READ_UNMAPPED;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks and does not modify the
+    /// mate record.
+    pub fn set_mate_mapped(&mut self, mate_mapped: bool) {
+        if mate_mapped {
+            self.flag &= !MATE_UNMAPPED;
+        } else {
+            self.flag |= MATE_UNMAPPED;
+        }
+    }
+
+    /// Sets the record strand. Use `true` to set to forward strand, and `false` for the
+    /// reverse strand.
+    pub fn set_strand(&mut self, forward_strand: bool) {
+        if forward_strand {
+            self.flag &= !READ_REVERSE_STRAND;
+        } else {
+            self.flag |= READ_REVERSE_STRAND;
+        }
+    }
+
+    /// Sets the strand of the mate. Use `true` to set to forward strand, and `false` for the
+    /// reverse strand. This function does not do any checks and does not modify the
+    /// mate record.
+    pub fn set_mate_strand(&mut self, forward_strand: bool) {
+        if forward_strand {
+            self.flag &= !MATE_REVERSE_STRAND;
+        } else {
+            self.flag |= MATE_REVERSE_STRAND;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    ///
+    /// Use `true` to set the flag bit and `false` to unset.
+    pub fn set_first_in_pair(&mut self, is_first: bool) {
+        if is_first {
+            self.flag |= FIRST_IN_PAIR;
+        } else {
+            self.flag &= !FIRST_IN_PAIR;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    ///
+    /// Use `true` to set the flag bit and `false` to unset.
+    pub fn set_last_in_pair(&mut self, is_last: bool) {
+        if is_last {
+            self.flag |= LAST_IN_PAIR;
+        } else {
+            self.flag &= !LAST_IN_PAIR;
+        }
+    }
+
+    /// Modifies the record flag. This function does not do any checks.
+    ///
+    /// Use `true` to set the flag bit and `false` to unset.
+    pub fn set_secondary(&mut self, is_secondary: bool) {
+        if is_secondary {
+            self.flag |= SECONDARY;
+        } else {
+            self.flag &= !SECONDARY;
+        }
+    }
+
+    /// Sets the record flag to fail or pass filters, such as platform/vendor quality controls.
+    ///
+    /// Use `true` to set the flag bit and `false` to unset.
+    pub fn make_fail_quality_controls(&mut self, fails: bool) {
+        if fails {
+            self.flag |= READ_FAILS_QC;
+        } else {
+            self.flag &= !READ_FAILS_QC;
+        }
+    }
+
+    /// Sets the record as PCR or optical duplicate.
+    pub fn set_duplicate(&mut self, is_duplicate: bool) {
+        if is_duplicate {
+            self.flag |= PCR_OR_OPTICAL_DUPLICATE;
+        } else {
+            self.flag &= !PCR_OR_OPTICAL_DUPLICATE;
+        }
+    }
+
+    pub fn set_supplementary(&mut self, is_supplementary: bool) {
+        if is_supplementary {
+            self.flag |= SUPPLEMENTARY;
+        } else {
+            self.flag &= !SUPPLEMENTARY;
+        }
     }
 
     /// Returns an iterator over pairs `(Option<u32>, Option<u32>)`.
@@ -1035,7 +1161,7 @@ impl Record {
     /// reference index. This iterator skips insertions and deletions.
     ///
     /// If the record is unmapped, returns an empty iterator.
-    pub fn matched_pairs(&self) -> cigar::MatchedPairs {
-        self.cigar.matched_pairs(self.start as u32)
+    pub fn matching_pairs(&self) -> cigar::MatchingPairs {
+        self.cigar.matching_pairs(self.start as u32)
     }
 }

@@ -243,8 +243,8 @@ impl Cigar {
         }
     }
 
-    pub(crate) fn matched_pairs(&self, r_pos: u32) -> MatchedPairs {
-        MatchedPairs {
+    pub(crate) fn matching_pairs(&self, r_pos: u32) -> MatchingPairs {
+        MatchingPairs {
             raw_iter: self.0.iter(),
             q_pos: 0,
             r_pos,
@@ -284,7 +284,7 @@ impl<'a> Iterator for AlignedPairs<'a> {
         } else {
             None
         };
-        let r_pos = if self.operation.consumes_query() {
+        let r_pos = if self.operation.consumes_ref() {
             self.r_pos += 1;
             Some(self.r_pos - 1)
         } else {
@@ -297,14 +297,14 @@ impl<'a> Iterator for AlignedPairs<'a> {
 /// Iterator over pairs `(u32, u32)`.
 /// The first element represents a sequence index, and the second element represents a
 /// reference index. This iterator skips insertions and deletions.
-pub struct MatchedPairs<'a> {
+pub struct MatchingPairs<'a> {
     raw_iter: Iter<'a, u32>,
     q_pos: u32,
     r_pos: u32,
     remaining_len: u32,
 }
 
-impl<'a> Iterator for MatchedPairs<'a> {
+impl<'a> Iterator for MatchingPairs<'a> {
     type Item = (u32, u32);
 
     fn next(&mut self) -> Option<Self::Item> {
