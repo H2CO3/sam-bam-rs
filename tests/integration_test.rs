@@ -18,7 +18,7 @@ fn compare_sam_files<P: AsRef<Path>, T: AsRef<Path>>(filename1: P, filename2: T)
     let mut line1 = String::new();
     let mut line2 = String::new();
 
-    loop {
+    for i in 1_usize.. {
         line1.clear();
         line2.clear();
         match (file1.read_line(&mut line1), file2.read_line(&mut line2)) {
@@ -40,7 +40,7 @@ fn compare_sam_files<P: AsRef<Path>, T: AsRef<Path>>(filename1: P, filename2: T)
         if line1 != line2 {
             println!("Crate output:    {}", line1.trim());
             println!("Samtools output: {}", line2.trim());
-            panic!("Outputs do not match");
+            panic!("Outputs do not match on line {}", i);
         }
     }
 }

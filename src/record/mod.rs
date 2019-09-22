@@ -830,6 +830,8 @@ impl Record {
                     self.corrupt("Record should contain tag CG, but does not".to_string())),
             };
             self.cigar.fill_from_raw(cigar_arr.iter().map(|el| el as u32));
+            std::mem::drop(cigar_arr);
+            self.tags.remove(b"CG");
         }
         Ok(())
     }
@@ -987,7 +989,7 @@ impl Record {
         let raw_cigar_len = if self.cigar.len() <= 0xffff {
             4 * self.cigar.len()
         } else {
-            10 + 4 * self.cigar.len()
+            16 + 4 * self.cigar.len()
         };
         let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len + self.seq.raw.len()
             + self.qual.len() + self.tags.raw().len();

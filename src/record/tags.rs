@@ -610,7 +610,7 @@ impl TagViewer {
 
     /// Removes a tag if present. Returns `true` if the tag existed and `false` otherwise.
     /// Takes `O(raw_tags_len)`.
-    pub fn remove<'a>(&'a mut self, name: &TagName) -> bool {
+    pub fn remove(&mut self, name: &TagName) -> bool {
         let mut start = 0;
         for i in 0..self.lengths.len() {
             let tag_len = self.lengths[i] as usize;
