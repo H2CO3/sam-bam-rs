@@ -20,8 +20,7 @@
 //! `SentenceWriter` will try not to split a record between two blocks.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::io::ErrorKind;
+use std::io::{self, Read, Seek, SeekFrom, Write, ErrorKind};
 use std::path::Path;
 use std::cmp::min;
 use std::fmt::{self, Display, Debug, Formatter};

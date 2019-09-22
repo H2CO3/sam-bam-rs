@@ -113,6 +113,7 @@ extern crate flate2;
 
 pub mod index;
 pub mod bgzip;
+pub mod bgzip_reader;
 pub mod record;
 pub mod bam_reader;
 pub mod bam_writer;
