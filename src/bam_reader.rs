@@ -21,7 +21,7 @@ pub struct RegionViewer<'a, R: Read + Seek> {
     chunks_reader: bgzip::ChunksReader<'a, R>,
     start: i32,
     end: i32,
-    predicate: Box<Fn(&record::Record) -> bool>,
+    predicate: Box<dyn Fn(&record::Record) -> bool>,
 }
 
 impl<'a, R: Read + Seek> RecordReader for RegionViewer<'a, R> {
@@ -97,7 +97,7 @@ impl<'a, R: Seek + Read> Iterator for RegionViewer<'a, R> {
 pub enum ModificationTime {
     Error,
     Ignore,
-    Warn(Box<Fn(&str)>),
+    Warn(Box<dyn Fn(&str)>),
 }
 
 impl ModificationTime {

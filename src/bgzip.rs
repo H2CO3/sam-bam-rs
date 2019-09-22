@@ -619,6 +619,7 @@ pub struct SentenceWriter<W: Write> {
     position: usize,
     end: Option<usize>,
     panicked: bool,
+    finished: bool,
 }
 
 impl<W: Write> SentenceWriter<W> {
@@ -630,6 +631,7 @@ impl<W: Write> SentenceWriter<W> {
             position: 0,
             end: None,
             panicked: false,
+            finished: false,
         }
     }
 
@@ -640,6 +642,7 @@ impl<W: Write> SentenceWriter<W> {
 
     /// Try to write a bgzip block from contents `[self.start - end)`.
     fn try_write(&mut self, end: usize) -> io::Result<()> {
+        self.finished = false;
         self.panicked = true;
         if self.start <= end {
             self.writer.write(&self.contents[self.start..end])?
@@ -688,10 +691,15 @@ impl<W: Write> SentenceWriter<W> {
         }
     }
 
-    /// Writes all the remaining contents to bgzip and an empty block.
+    /// Flushes all the remaining contents to bgzip and writes an empty block.
     pub fn finish(&mut self) -> io::Result<()> {
         self.flush()?;
-        self.writer.write_empty()
+        if !self.finished {
+            self.writer.write_empty()?;
+            self.writer.flush()?;
+            self.finished = true;
+        }
+        Ok(())
     }
 }
 
