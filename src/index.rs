@@ -31,7 +31,7 @@ impl VirtualOffset {
     }
 
     /// Construct Virtual offset from `block_offset` and `contents_offset`.
-    pub fn from(block_offset: u64, contents_offset: u16) -> Self {
+    pub fn new(block_offset: u64, contents_offset: u16) -> Self {
         VirtualOffset(block_offset << 16 | contents_offset as u64)
     }
 
