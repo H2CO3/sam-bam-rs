@@ -96,6 +96,7 @@ fn as_u16(buffer: &[u8], start: usize) -> u16 {
 
 /// Bgzip block. Both uncompressed and compressed size should not be bigger than
 /// `MAX_BLOCK_SIZE = 65536`.
+#[derive(Clone)]
 pub struct Block {
     // Compressed BGZF block
     block: Vec<u8>,
@@ -159,20 +160,19 @@ impl Block {
         unsafe {
             self.contents.set_len(exp_contents_size as usize);
         }
-        let contents_size = {
+        {
             let mut decoder = DeflateDecoder::new(&mut self.contents[..]);
             decoder.write_all(&self.block[12 + self.extra_len as usize..block_size - 8])
                 .map_err(|e| BlockError::Corrupted(
                     format!("Could not decompress block contents: {:?}", e)))?;
             let remaining_contents = decoder.finish()
                 .map_err(|e| BlockError::Corrupted(
-                    format!("Could not decompress block contents: {:?}", e)))?;
-            MAX_BLOCK_SIZE - remaining_contents.len()
-        };
-        if exp_contents_size as usize != contents_size {
-            return Err(BlockError::Corrupted(
-                format!("Uncompressed sizes do not match: expected {}, observed {}",
-                exp_contents_size, contents_size)));
+                    format!("Could not decompress block contents: {:?}", e)))?.len();
+            if remaining_contents != 0 {
+                return Err(BlockError::Corrupted(
+                    format!("Uncompressed sizes do not match: expected {}, observed {}",
+                    exp_contents_size, exp_contents_size as usize - remaining_contents)));
+            }
         }
 
         let exp_crc32 = (&self.block[block_size - 8..block_size - 4]).read_u32::<LittleEndian>()?;
@@ -255,9 +255,9 @@ struct WorkingQueue {
     tasks: VecDeque<Task>,
 }
 
-const SLEEP_TIME: Duration = Duration::from_millis(100);
+const SLEEP_TIME: Duration = Duration::from_nanos(50);
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 struct WorkerId(u16);
 
 struct Worker {
@@ -268,7 +268,7 @@ struct Worker {
 
 impl Worker {
     fn run(&mut self) {
-        while !self.is_finished.read().map(|guard| *guard).unwrap_or(true) {
+        'outer: while !self.is_finished.read().map(|guard| *guard).unwrap_or(true) {
             let block = if let Ok(mut guard) = self.working_queue.lock() {
                 if let Some(block) = guard.blocks.pop_front() {
                     guard.tasks.push_back(Task::NotReady((self.worker_id, TaskStatus::Waiting)));
@@ -300,7 +300,7 @@ impl Worker {
                                 Task::Interrupted(block)
                             };
                             std::mem::replace(task, new_value);
-                            break;
+                            continue 'outer;
                         },
                         _ => {},
                     }
@@ -584,6 +584,12 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
     }
 }
 
+impl Drop for MultiThread {
+    fn drop(&mut self) {
+        let _ignore = self.is_finished.write().map(|mut x| *x = true);
+    }
+}
+
 pub trait ReadBgzip {
     fn next(&mut self) -> Result<&Block, BlockError>;
 }
@@ -609,7 +615,7 @@ impl Jumping<File> {
 impl<R: Read + Seek> Jumping<R> {
     pub fn from_stream(stream: R, additional_threads: u16) -> io::Result<Self> {
         let reader = JumpingReadBlock::new(stream)?;
-        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads > 0 {
+        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
             Box::new(SingleThread::new())
         } else {
             Box::new(MultiThread::new(additional_threads))
@@ -647,7 +653,7 @@ impl Consecutive<File> {
 impl<R: Read> Consecutive<R> {
     pub fn from_stream(stream: R, additional_threads: u16) -> Self {
         let reader = ConsecutiveReadBlock::new(stream);
-        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads > 0 {
+        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
             Box::new(SingleThread::new())
         } else {
             Box::new(MultiThread::new(additional_threads))
