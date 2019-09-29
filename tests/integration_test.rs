@@ -45,16 +45,18 @@ fn compare_sam_files<P: AsRef<Path>, T: AsRef<Path>>(filename1: P, filename2: T)
     }
 }
 
-fn test_indexed_reader(path: &str) {
-    let mut reader = bam::IndexedReader::from_path(path).unwrap();
+fn test_indexed_reader(path: &str, additional_threads: u16) {
+    let mut reader = bam::IndexedReader::build()
+        .additional_threads(additional_threads)
+        .from_path(path).unwrap();
     let header = reader.header().clone();
 
-    const ITERATIONS: usize = 10;
+    const ITERATIONS: usize = 100;
     let mut rng = rand::thread_rng();
     let mut record = bam::Record::new();
 
-    let output1 = format!("tests/data/tmp/bamcrate.ind_reader.sam");
-    let output2 = format!("tests/data/tmp/samtools.ind_reader.sam");
+    let output1 = format!("tests/data/tmp/bamcrate.ind_reader_t{}.sam", additional_threads);
+    let output2 = format!("tests/data/tmp/samtools.ind_reader_t{}.sam", additional_threads);
     for i in 0..ITERATIONS {
         let ref_id = rng.gen_range(0, header.n_references());
         let length = header.reference_len(ref_id).unwrap();
@@ -98,14 +100,14 @@ fn test_indexed_reader(path: &str) {
     }
 }
 
-fn test_bam_reader(path: &str) {
-    let mut reader = bam::BamReader::from_path(path).unwrap();
+fn test_bam_reader(path: &str, additional_threads: u16) {
+    let mut reader = bam::BamReader::from_path(path, additional_threads).unwrap();
 
     let mut record = bam::Record::new();
     let mut count = 0;
 
-    let output1 = format!("tests/data/tmp/bamcrate.bam_reader.sam");
-    let output2 = format!("tests/data/tmp/samtools.bam_reader.sam");
+    let output1 = format!("tests/data/tmp/bamcrate.bam_reader_t{}.sam", additional_threads);
+    let output2 = format!("tests/data/tmp/samtools.bam_reader_t{}.sam", additional_threads);
     let timer = Instant::now();
     let mut sam_writer = bam::SamWriter::from_path(&output1, reader.header().clone()).unwrap();
     loop {
@@ -134,14 +136,14 @@ fn test_bam_reader(path: &str) {
     compare_sam_files(&output1, &output2);
 }
 
-fn test_bam_to_bam(path: &str) {
-    let mut reader = bam::BamReader::from_path(path).unwrap();
+fn test_bam_to_bam(path: &str, additional_threads: u16) {
+    let mut reader = bam::BamReader::from_path(path, additional_threads).unwrap();
     let mut record = bam::Record::new();
     let mut count = 0;
 
-    let bam_output = format!("tests/data/tmp/bamcrate.bam_to_bam.bam");
-    let output1 = format!("tests/data/tmp/bamcrate.bam_to_bam.sam");
-    let output2 = format!("tests/data/tmp/samtools.bam_to_bam.sam");
+    let bam_output = format!("tests/data/tmp/bamcrate.bam_to_bam_t{}.bam", additional_threads);
+    let output1 = format!("tests/data/tmp/bamcrate.bam_to_bam_t{}.sam", additional_threads);
+    let output2 = format!("tests/data/tmp/samtools.bam_to_bam_t{}.sam", additional_threads);
     let timer = Instant::now();
     let mut bam_writer = bam::BamWriter::from_path(&bam_output, reader.header().clone())
         .unwrap();
@@ -219,32 +221,32 @@ fn test_sam_to_bam(path: &str) {
 }
 
 #[test]
-fn indexed_reader() {
+fn indexed_reader_singlethread() {
     for entry in glob("tests/data/iread*.bam").unwrap() {
         let entry = entry.unwrap();
         println!("Analyzing {}", entry.display());
         let entry_str = entry.as_os_str().to_str().unwrap();
-        test_indexed_reader(entry_str);
+        test_indexed_reader(entry_str, 0);
     }
 }
 
 #[test]
-fn bam_reader() {
+fn bam_reader_singlethread() {
     for entry in glob("tests/data/read*.bam").unwrap() {
         let entry = entry.unwrap();
         println!("Analyzing {}", entry.display());
         let entry_str = entry.as_os_str().to_str().unwrap();
-        test_bam_reader(entry_str);
+        test_bam_reader(entry_str, 0);
     }
 }
 
 #[test]
-fn bam_to_bam() {
+fn bam_to_bam_singlethread() {
     for entry in glob("tests/data/read*.bam").unwrap() {
         let entry = entry.unwrap();
         println!("Analyzing {}", entry.display());
         let entry_str = entry.as_os_str().to_str().unwrap();
-        test_bam_to_bam(entry_str);
+        test_bam_to_bam(entry_str, 0);
     }
 }
 
@@ -255,5 +257,35 @@ fn sam_to_bam() {
         println!("Analyzing {}", entry.display());
         let entry_str = entry.as_os_str().to_str().unwrap();
         test_sam_to_bam(entry_str);
+    }
+}
+
+#[test]
+fn indexed_reader_multithread() {
+    for entry in glob("tests/data/iread*.bam").unwrap() {
+        let entry = entry.unwrap();
+        println!("Analyzing {}", entry.display());
+        let entry_str = entry.as_os_str().to_str().unwrap();
+        test_indexed_reader(entry_str, 2);
+    }
+}
+
+#[test]
+fn bam_reader_multithread() {
+    for entry in glob("tests/data/read*.bam").unwrap() {
+        let entry = entry.unwrap();
+        println!("Analyzing {}", entry.display());
+        let entry_str = entry.as_os_str().to_str().unwrap();
+        test_bam_reader(entry_str, 2);
+    }
+}
+
+#[test]
+fn bam_to_bam_multithread() {
+    for entry in glob("tests/data/read*.bam").unwrap() {
+        let entry = entry.unwrap();
+        println!("Analyzing {}", entry.display());
+        let entry_str = entry.as_os_str().to_str().unwrap();
+        test_bam_to_bam(entry_str, 2);
     }
 }

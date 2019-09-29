@@ -86,13 +86,12 @@ impl Chunk {
     }
 
     /// Check if two chunks intersect.
-    pub fn intersects(&self, other: &Chunk) -> bool {
-        self.start < other.end && other.start < self.end
+    pub fn can_combine(&self, other: &Chunk) -> bool {
+        self.start <= other.end && other.start <= self.end
     }
 
     /// Combine two intersecting chunks. Panics if chunks do not intersect.
     pub fn combine(&self, other: &Chunk) -> Chunk {
-        assert!(self.intersects(other), "Cannot combine non-intersecting chunks");
         Chunk {
             start: min(self.start, other.start),
             end: max(self.end, other.end),
@@ -221,7 +220,7 @@ impl Index {
         chunks.sort();
         let mut curr = chunks[0].clone();
         for i in 1..chunks.len() {
-            if !curr.intersects(&chunks[i]) {
+            if !curr.can_combine(&chunks[i]) {
                 res.push(curr);
                 curr = chunks[i].clone();
             } else {

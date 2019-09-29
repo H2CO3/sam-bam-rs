@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::fmt::{self, Display, Debug, Formatter};
 use std::path::Path;
 use std::fs::File;
-use std::cmp::min;
+use std::cmp::{min, max};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::write::DeflateDecoder;
@@ -396,7 +396,7 @@ impl<R: Read + Seek> JumpingReadBlock<R> {
             if self.index >= self.chunks.len() {
                 None
             } else {
-                Some(self.chunks[self.index].start().block_offset())
+                Some(max(self.offset, self.chunks[self.index].start().block_offset()))
             }
         } else {
             Some(self.offset)
@@ -644,7 +644,7 @@ pub trait ReadBgzip {
     fn current(&self) -> Option<&Block>;
 }
 
-pub struct Jumping<R: Read + Seek> {
+pub struct SeekReader<R: Read + Seek> {
     decompressor: Box<dyn DecompressBlock<JumpingReadBlock<R>>>,
     reader: JumpingReadBlock<R>,
     chunks_index: usize,
@@ -652,14 +652,14 @@ pub struct Jumping<R: Read + Seek> {
     contents_offset: usize,
 }
 
-impl Jumping<File> {
+impl SeekReader<File> {
     pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
         let file = File::open(path)?;
         Self::from_stream(file, additional_threads)
     }
 }
 
-impl<R: Read + Seek> Jumping<R> {
+impl<R: Read + Seek> SeekReader<R> {
     pub fn from_stream(stream: R, additional_threads: u16) -> io::Result<Self> {
         let reader = JumpingReadBlock::new(stream)?;
         let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
@@ -693,7 +693,7 @@ impl<R: Read + Seek> Jumping<R> {
     }
 }
 
-impl<R: Read + Seek> ReadBgzip for Jumping<R> {
+impl<R: Read + Seek> ReadBgzip for SeekReader<R> {
     fn next(&mut self) -> Result<&Block, BlockError> {
         self.started = true;
         let block = self.decompressor.decompress_next(&mut self.reader)?;
@@ -702,7 +702,7 @@ impl<R: Read + Seek> ReadBgzip for Jumping<R> {
         if block_offset >= chunks[self.chunks_index].end() {
             self.chunks_index += 1;
         }
-        self.contents_offset = min(block_offset, chunks[self.chunks_index].start())
+        self.contents_offset = max(block_offset, chunks[self.chunks_index].start())
             .contents_offset() as usize;
         Ok(block)
     }
@@ -712,7 +712,7 @@ impl<R: Read + Seek> ReadBgzip for Jumping<R> {
     }
 }
 
-impl<R: Read + Seek> Read for Jumping<R> {
+impl<R: Read + Seek> Read for SeekReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if !self.started {
             match self.next() {
@@ -720,66 +720,66 @@ impl<R: Read + Seek> Read for Jumping<R> {
                 Err(BlockError::EndOfStream) => return Ok(0),
                 Err(e) => return Err(e.into()),
             }
-        } else {
+        }
+        loop {
             let block = match self.current() {
                 Some(value) => value,
                 None => return Ok(0),
             };
 
+            let block_offset = block.offset();
             let end_offset = self.reader.chunks()[self.chunks_index].end();
-            let contents_end = if block.offset() < end_offset.block_offset() {
+            let contents_end = if block_offset < end_offset.block_offset() {
                 block.contents_size()
             } else {
-                debug_assert!(block.offset() == end_offset.block_offset());
+                debug_assert!(block_offset == end_offset.block_offset());
                 end_offset.contents_offset() as usize
             };
             if self.contents_offset < contents_end {
                 let read_bytes = min(contents_end - self.contents_offset, buf.len());
                 buf[..read_bytes].copy_from_slice(
-                    &block.contents()[self.contents_offset..contents_end]);
+                    &block.contents()[self.contents_offset..self.contents_offset + read_bytes]);
                 std::mem::drop(block);
                 self.contents_offset += read_bytes;
                 return Ok(read_bytes)
             }
-            match self.next() {
-                Ok(_) => {},
-                Err(BlockError::EndOfStream) => return Ok(0),
-                Err(e) => return Err(e.into()),
+            std::mem::drop(block);
+
+            let chunks = self.reader.chunks();
+            let read_next = if block_offset == end_offset.block_offset() {
+                self.chunks_index += 1;
+                self.chunks_index >= chunks.len()
+                    || chunks[self.chunks_index].start().block_offset() != block_offset
+            } else {
+                true
+            };
+
+            if read_next {
+                match self.next() {
+                    Ok(_) => {},
+                    Err(BlockError::EndOfStream) => return Ok(0),
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
-
-        let block = self.current().expect("Block cannot be None here");
-        let end_offset = self.reader.chunks()[self.chunks_index].end();
-        let contents_end = if block.offset() < end_offset.block_offset() {
-            block.contents_size()
-        } else {
-            debug_assert!(block.offset() == end_offset.block_offset());
-            end_offset.contents_offset() as usize
-        };
-        let read_bytes = min(contents_end - self.contents_offset, buf.len());
-        assert!(read_bytes > 0);
-        buf[..read_bytes].copy_from_slice(&block.contents()[self.contents_offset..contents_end]);
-        std::mem::drop(block);
-        self.contents_offset += read_bytes;
-        Ok(read_bytes)
     }
 }
 
-pub struct Consecutive<R: Read> {
+pub struct ConsecutiveReader<R: Read> {
     decompressor: Box<dyn DecompressBlock<ConsecutiveReadBlock<R>>>,
     reader: ConsecutiveReadBlock<R>,
     contents_offset: usize,
     started: bool,
 }
 
-impl Consecutive<File> {
+impl ConsecutiveReader<File> {
     pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
         let file = File::open(path)?;
         Ok(Self::from_stream(file, additional_threads))
     }
 }
 
-impl<R: Read> Consecutive<R> {
+impl<R: Read> ConsecutiveReader<R> {
     pub fn from_stream(stream: R, additional_threads: u16) -> Self {
         let reader = ConsecutiveReadBlock::new(stream);
         let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
@@ -799,7 +799,7 @@ impl<R: Read> Consecutive<R> {
     }
 }
 
-impl<R: Read> ReadBgzip for Consecutive<R> {
+impl<R: Read> ReadBgzip for ConsecutiveReader<R> {
     fn next(&mut self) -> Result<&Block, BlockError> {
         self.started = true;
         self.contents_offset = 0;
@@ -811,7 +811,7 @@ impl<R: Read> ReadBgzip for Consecutive<R> {
     }
 }
 
-impl<R: Read> Read for Consecutive<R> {
+impl<R: Read> Read for ConsecutiveReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if !self.started {
             match self.next() {
