@@ -6,6 +6,7 @@ use std::time::Duration;
 use std::fmt::{self, Display, Debug, Formatter};
 use std::path::Path;
 use std::fs::File;
+use std::cmp::min;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::write::DeflateDecoder;
@@ -15,6 +16,8 @@ use super::index::{Chunk, VirtualOffset};
 struct ObjectPool<T> {
     objects: Vec<T>,
     constructor: Box<dyn Fn() -> T>,
+    taken: u64,
+    brought: u64,
 }
 
 impl<T> ObjectPool<T> {
@@ -22,10 +25,13 @@ impl<T> ObjectPool<T> {
         Self {
             objects: vec![],
             constructor: Box::new(constructor),
+            taken: 0,
+            brought: 0,
         }
     }
 
     fn take(&mut self) -> T {
+        self.taken += 1;
         match self.objects.pop() {
             Some(object) => object,
             None => (self.constructor)(),
@@ -33,6 +39,7 @@ impl<T> ObjectPool<T> {
     }
 
     fn bring(&mut self, object: T) {
+        self.brought += 1;
         self.objects.push(object);
     }
 }
@@ -249,6 +256,15 @@ enum Task {
     Interrupted(Block),
 }
 
+impl Task {
+    fn is_ready(&self) -> bool {
+        match self {
+            Task::Ready((_, _)) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Default)]
 struct WorkingQueue {
     blocks: VecDeque<Block>,
@@ -386,6 +402,10 @@ impl<R: Read + Seek> JumpingReadBlock<R> {
             Some(self.offset)
         }
     }
+
+    fn chunks(&self) -> &[Chunk] {
+        &self.chunks
+    }
 }
 
 impl<R: Read + Seek> ReadBlock for JumpingReadBlock<R> {
@@ -406,27 +426,40 @@ impl<R: Read + Seek> ReadBlock for JumpingReadBlock<R> {
 
 trait DecompressBlock<T: ReadBlock> {
     fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError>;
+    fn get_current(&self) -> Option<&Block>;
     fn reset_queue(&mut self);
     fn join(&mut self);
 }
 
 struct SingleThread {
     block: Block,
+    was_error: bool,
 }
 
 impl SingleThread {
     fn new() -> Self {
         Self {
             block: Block::new(),
+            was_error: true,
         }
     }
 }
 
 impl<T: ReadBlock> DecompressBlock<T> for SingleThread {
     fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError> {
+        self.was_error = true;
         reader.read_next(&mut self.block)?;
         self.block.decompress()?;
+        self.was_error = false;
         Ok(&self.block)
+    }
+
+    fn get_current(&self) -> Option<&Block> {
+        if self.was_error {
+            None
+        } else {
+            Some(&self.block)
+        }
     }
 
     fn reset_queue(&mut self) {}
@@ -441,6 +474,7 @@ struct MultiThread {
     workers: Vec<thread::JoinHandle<()>>,
     reached_end: bool,
     current_block: Block,
+    was_error: bool,
 }
 
 impl MultiThread {
@@ -468,18 +502,21 @@ impl MultiThread {
             workers,
             reached_end: false,
             current_block: Block::new(),
+            was_error: true,
         }
     }
 }
 
 impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
     fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError> {
+        self.was_error = true;
         assert!(self.workers.len() > 0, "Cannot decompress blocks: threads were already joined");
 
         let blocks_to_read = if self.reached_end {
             0
         } else if let Ok(guard) = self.working_queue.lock() {
-            self.workers.len() - guard.blocks.len()
+            let ready_tasks = guard.tasks.iter().filter(|task| task.is_ready()).count();
+            self.workers.len() .saturating_sub(std::cmp::max(guard.blocks.len(), ready_tasks))
         } else {
             return Err(BlockError::IoError(io::Error::new(ErrorKind::Other,
                 "Panic in one of the threads")));
@@ -549,6 +586,7 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
         match result {
             Ok(()) => {
                 self.blocks_pool.bring(std::mem::replace(&mut self.current_block, block));
+                self.was_error = false;
                 Ok(&self.current_block)
             },
             Err(e) => {
@@ -558,15 +596,25 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
         }
     }
 
+    fn get_current(&self) -> Option<&Block> {
+        if self.was_error {
+            None
+        } else {
+            Some(&self.current_block)
+        }
+    }
+
     fn reset_queue(&mut self) {
+        self.reached_end = false;
+        self.was_error = true;
         match self.working_queue.lock() {
             Ok(mut guard) => {
                 let old_tasks = std::mem::replace(&mut guard.tasks, VecDeque::new());
                 for task in old_tasks.into_iter() {
                     match task {
                         Task::Ready((block, _)) => self.blocks_pool.bring(block),
-                        Task::NotReady((worker_id, _)) =>
-                            guard.tasks.push_back(Task::NotReady((worker_id, TaskStatus::Interrupted))),
+                        Task::NotReady((worker_id, _)) => guard.tasks.push_back(
+                            Task::NotReady((worker_id, TaskStatus::Interrupted))),
                         Task::Interrupted(block) => self.blocks_pool.bring(block),
                     }
                 }
@@ -576,6 +624,7 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
     }
 
     fn join(&mut self) {
+        self.was_error = true;
         *self.is_finished.write()
             .unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e)) = true;
         for worker in self.workers.drain(..) {
@@ -592,17 +641,15 @@ impl Drop for MultiThread {
 
 pub trait ReadBgzip {
     fn next(&mut self) -> Result<&Block, BlockError>;
+    fn current(&self) -> Option<&Block>;
 }
 
 pub struct Jumping<R: Read + Seek> {
     decompressor: Box<dyn DecompressBlock<JumpingReadBlock<R>>>,
     reader: JumpingReadBlock<R>,
-}
-
-impl<R: Read + Seek> ReadBgzip for Jumping<R> {
-    fn next(&mut self) -> Result<&Block, BlockError> {
-        self.decompressor.decompress_next(&mut self.reader)
-    }
+    chunks_index: usize,
+    started: bool,
+    contents_offset: usize,
 }
 
 impl Jumping<File> {
@@ -620,12 +667,20 @@ impl<R: Read + Seek> Jumping<R> {
         } else {
             Box::new(MultiThread::new(additional_threads))
         };
-        Ok(Self { decompressor, reader })
+        Ok(Self {
+            decompressor, reader,
+            chunks_index: 0,
+            started: false,
+            contents_offset: 0,
+        })
     }
 
     pub fn set_chunks<I: IntoIterator<Item = Chunk>>(&mut self, chunks: I) {
         self.reader.set_chunks(chunks);
         self.decompressor.reset_queue();
+        self.chunks_index = 0;
+        self.started = false;
+        self.contents_offset = 0;
     }
 
     pub fn make_consecutive(&mut self) {
@@ -638,9 +693,83 @@ impl<R: Read + Seek> Jumping<R> {
     }
 }
 
+impl<R: Read + Seek> ReadBgzip for Jumping<R> {
+    fn next(&mut self) -> Result<&Block, BlockError> {
+        self.started = true;
+        let block = self.decompressor.decompress_next(&mut self.reader)?;
+        let block_offset = VirtualOffset::new(block.offset(), 0);
+        let chunks = self.reader.chunks();
+        if block_offset >= chunks[self.chunks_index].end() {
+            self.chunks_index += 1;
+        }
+        self.contents_offset = min(block_offset, chunks[self.chunks_index].start())
+            .contents_offset() as usize;
+        Ok(block)
+    }
+
+    fn current(&self) -> Option<&Block> {
+        self.decompressor.get_current()
+    }
+}
+
+impl<R: Read + Seek> Read for Jumping<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.started {
+            match self.next() {
+                Ok(_) => {},
+                Err(BlockError::EndOfStream) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            let block = match self.current() {
+                Some(value) => value,
+                None => return Ok(0),
+            };
+
+            let end_offset = self.reader.chunks()[self.chunks_index].end();
+            let contents_end = if block.offset() < end_offset.block_offset() {
+                block.contents_size()
+            } else {
+                debug_assert!(block.offset() == end_offset.block_offset());
+                end_offset.contents_offset() as usize
+            };
+            if self.contents_offset < contents_end {
+                let read_bytes = min(contents_end - self.contents_offset, buf.len());
+                buf[..read_bytes].copy_from_slice(
+                    &block.contents()[self.contents_offset..contents_end]);
+                std::mem::drop(block);
+                self.contents_offset += read_bytes;
+                return Ok(read_bytes)
+            }
+            match self.next() {
+                Ok(_) => {},
+                Err(BlockError::EndOfStream) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let block = self.current().expect("Block cannot be None here");
+        let end_offset = self.reader.chunks()[self.chunks_index].end();
+        let contents_end = if block.offset() < end_offset.block_offset() {
+            block.contents_size()
+        } else {
+            debug_assert!(block.offset() == end_offset.block_offset());
+            end_offset.contents_offset() as usize
+        };
+        let read_bytes = min(contents_end - self.contents_offset, buf.len());
+        assert!(read_bytes > 0);
+        buf[..read_bytes].copy_from_slice(&block.contents()[self.contents_offset..contents_end]);
+        std::mem::drop(block);
+        self.contents_offset += read_bytes;
+        Ok(read_bytes)
+    }
+}
+
 pub struct Consecutive<R: Read> {
     decompressor: Box<dyn DecompressBlock<ConsecutiveReadBlock<R>>>,
     reader: ConsecutiveReadBlock<R>,
+    contents_offset: usize,
+    started: bool,
 }
 
 impl Consecutive<File> {
@@ -658,7 +787,11 @@ impl<R: Read> Consecutive<R> {
         } else {
             Box::new(MultiThread::new(additional_threads))
         };
-        Self { decompressor, reader }
+        Self {
+            decompressor, reader,
+            contents_offset: 0,
+            started: false,
+        }
     }
 
     pub fn join(&mut self) {
@@ -668,6 +801,50 @@ impl<R: Read> Consecutive<R> {
 
 impl<R: Read> ReadBgzip for Consecutive<R> {
     fn next(&mut self) -> Result<&Block, BlockError> {
+        self.started = true;
+        self.contents_offset = 0;
         self.decompressor.decompress_next(&mut self.reader)
+    }
+
+    fn current(&self) -> Option<&Block> {
+        self.decompressor.get_current()
+    }
+}
+
+impl<R: Read> Read for Consecutive<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if !self.started {
+            match self.next() {
+                Ok(_) => {},
+                Err(BlockError::EndOfStream) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            let block = match self.current() {
+                Some(value) => value,
+                None => return Ok(0),
+            };
+
+            let read_bytes = min(block.contents_size() - self.contents_offset, buf.len());
+            if read_bytes > 0 {
+                buf[..read_bytes].copy_from_slice(
+                    &block.contents()[self.contents_offset..self.contents_offset + read_bytes]);
+                std::mem::drop(block);
+                self.contents_offset += read_bytes;
+                return Ok(read_bytes)
+            }
+            match self.next() {
+                Ok(_) => {},
+                Err(BlockError::EndOfStream) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let block = self.current().expect("Block cannot be None here");
+        let read_bytes = min(block.contents_size(), buf.len());
+        buf[..read_bytes].copy_from_slice(&block.contents()[..read_bytes]);
+        std::mem::drop(block);
+        self.contents_offset = read_bytes;
+        Ok(read_bytes)
     }
 }
