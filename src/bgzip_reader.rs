@@ -4,6 +4,8 @@ use std::io::{self, Read, Write, ErrorKind, Seek, SeekFrom};
 use std::thread;
 use std::time::Duration;
 use std::fmt::{self, Display, Debug, Formatter};
+use std::path::Path;
+use std::fs::File;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::write::DeflateDecoder;
@@ -233,6 +235,26 @@ impl Block {
     }
 }
 
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskStatus {
+    Waiting,
+    Interrupted,
+}
+
+enum Task {
+    Ready((Block, Result<(), BlockError>)),
+    // Second element = true if the block is no longer needed.
+    NotReady((WorkerId, TaskStatus)),
+    Interrupted(Block),
+}
+
+#[derive(Default)]
+struct WorkingQueue {
+    blocks: VecDeque<Block>,
+    tasks: VecDeque<Task>,
+}
+
 const SLEEP_TIME: Duration = Duration::from_millis(100);
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -292,47 +314,49 @@ impl Worker {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TaskStatus {
-    Waiting,
-    Interrupted,
+trait ReadBlock {
+    fn read_next(&mut self, block: &mut Block) -> Result<(), BlockError>;
 }
 
-enum Task {
-    Ready((Block, Result<(), BlockError>)),
-    // Second element = true if the block is no longer needed.
-    NotReady((WorkerId, TaskStatus)),
-    Interrupted(Block),
+struct ConsecutiveReadBlock<R: Read> {
+    stream: R,
+    offset: u64,
 }
 
-#[doc(hidden)]
-pub trait ReadingMode {
-    /// `next_offset` - is a function that returns the next offset given a current offset, and None,
-    /// if the reader shlould stop.
-    fn next_offset(&mut self, offset: u64) -> Option<u64>;
-}
-
-pub struct Consecutive {}
-
-impl ReadingMode for Consecutive {
-    fn next_offset(&mut self, offset: u64) -> Option<u64> {
-        Some(offset)
+impl<R: Read> ConsecutiveReadBlock<R> {
+    fn new(stream: R) -> Self {
+        Self {
+            stream,
+            offset: 0,
+        }
     }
 }
 
-pub struct Bouncing {
+impl<R: Read> ReadBlock for ConsecutiveReadBlock<R> {
+    fn read_next(&mut self, block: &mut Block) -> Result<(), BlockError> {
+        block.fill(self.offset, &mut self.stream)?;
+        self.offset += block.block_size() as u64;
+        Ok(())
+    }
+}
+
+struct JumpingReadBlock<R: Read + Seek> {
+    stream: R,
+    offset: u64,
     chunks: Vec<Chunk>,
     index: usize,
     started: bool,
 }
 
-impl Bouncing {
-    fn new() -> Self {
-        Self {
-            chunks: vec![],
+impl<R: Read + Seek> JumpingReadBlock<R> {
+    fn new(mut stream: R) -> io::Result<Self> {
+        let offset = stream.seek(SeekFrom::Current(0))?;
+        Ok(Self {
+            stream, offset,
+            chunks: Vec::new(),
             index: 0,
             started: false,
-        }
+        })
     }
 
     fn set_chunks<I: IntoIterator<Item = Chunk>>(&mut self, chunks: I) {
@@ -341,10 +365,8 @@ impl Bouncing {
         self.index = 0;
         self.started = false;
     }
-}
 
-impl ReadingMode for Bouncing {
-    fn next_offset(&mut self, offset: u64) -> Option<u64> {
+    fn next_offset(&mut self) -> Option<u64> {
         if self.index >= self.chunks.len() {
             return None;
         }
@@ -353,7 +375,7 @@ impl ReadingMode for Bouncing {
             return Some(self.chunks[0].start().block_offset());
         }
 
-        if VirtualOffset::new(offset, 0) >= self.chunks[self.index].end() {
+        if VirtualOffset::new(self.offset, 0) >= self.chunks[self.index].end() {
             self.index += 1;
             if self.index >= self.chunks.len() {
                 None
@@ -361,23 +383,58 @@ impl ReadingMode for Bouncing {
                 Some(self.chunks[self.index].start().block_offset())
             }
         } else {
-            Some(offset)
+            Some(self.offset)
         }
     }
 }
 
-#[doc(hidden)]
-pub trait DecompressBlock {
-    fn next_block<R: ReadBlockInto>(&mut self, reader: &mut R) -> Result<&Block, BlockError>;
+impl<R: Read + Seek> ReadBlock for JumpingReadBlock<R> {
+    fn read_next(&mut self, block: &mut Block) -> Result<(), BlockError> {
+        if let Some(new_offset) = self.next_offset() {
+            if new_offset != self.offset {
+                self.stream.seek(SeekFrom::Start(new_offset))?;
+                self.offset = new_offset;
+            }
+            block.fill(self.offset, &mut self.stream)?;
+            self.offset += block.block_size() as u64;
+            Ok(())
+        } else {
+            Err(BlockError::EndOfStream)
+        }
+    }
 }
 
-#[derive(Default)]
-struct WorkingQueue {
-    blocks: VecDeque<Block>,
-    tasks: VecDeque<Task>,
+trait DecompressBlock<T: ReadBlock> {
+    fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError>;
+    fn reset_queue(&mut self);
+    fn join(&mut self);
 }
 
-pub struct MultiThread {
+struct SingleThread {
+    block: Block,
+}
+
+impl SingleThread {
+    fn new() -> Self {
+        Self {
+            block: Block::new(),
+        }
+    }
+}
+
+impl<T: ReadBlock> DecompressBlock<T> for SingleThread {
+    fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError> {
+        reader.read_next(&mut self.block)?;
+        self.block.decompress()?;
+        Ok(&self.block)
+    }
+
+    fn reset_queue(&mut self) {}
+
+    fn join(&mut self) {}
+}
+
+struct MultiThread {
     working_queue: Arc<Mutex<WorkingQueue>>,
     is_finished: Arc<RwLock<bool>>,
     blocks_pool: ObjectPool<Block>,
@@ -413,20 +470,12 @@ impl MultiThread {
             current_block: Block::new(),
         }
     }
-
-    /// Joins workers after they finish their current job.
-    pub fn join(self) -> thread::Result<()> {
-        *self.is_finished.write()
-            .map_err(|e| Box::new(e.to_string()) as Box<std::any::Any + Send>)? = true;
-        for worker in self.workers {
-            worker.join()?;
-        }
-        Ok(())
-    }
 }
 
-impl DecompressBlock for MultiThread {
-    fn next_block<R: ReadBlockInto>(&mut self, reader: &mut R) -> Result<&Block, BlockError> {
+impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
+    fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError> {
+        assert!(self.workers.len() > 0, "Cannot decompress blocks: threads were already joined");
+
         let blocks_to_read = if self.reached_end {
             0
         } else if let Ok(guard) = self.working_queue.lock() {
@@ -438,7 +487,7 @@ impl DecompressBlock for MultiThread {
 
         for _ in 0..blocks_to_read {
             let mut block = self.blocks_pool.take();
-            match reader.read_block_into(&mut block) {
+            match reader.read_next(&mut block) {
                 Err(BlockError::EndOfStream) => {
                     self.reached_end = true;
                     self.blocks_pool.bring(block);
@@ -508,60 +557,111 @@ impl DecompressBlock for MultiThread {
             },
         }
     }
-}
 
-pub struct SingleThread {
-    block: Block,
-}
+    fn reset_queue(&mut self) {
+        match self.working_queue.lock() {
+            Ok(mut guard) => {
+                let old_tasks = std::mem::replace(&mut guard.tasks, VecDeque::new());
+                for task in old_tasks.into_iter() {
+                    match task {
+                        Task::Ready((block, _)) => self.blocks_pool.bring(block),
+                        Task::NotReady((worker_id, _)) =>
+                            guard.tasks.push_back(Task::NotReady((worker_id, TaskStatus::Interrupted))),
+                        Task::Interrupted(block) => self.blocks_pool.bring(block),
+                    }
+                }
+            },
+            Err(e) => panic!("Panic in one of the threads: {:?}", e),
+        }
+    }
 
-impl SingleThread {
-    fn new() -> Self {
-        Self {
-            block: Block::new(),
+    fn join(&mut self) {
+        *self.is_finished.write()
+            .unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e)) = true;
+        for worker in self.workers.drain(..) {
+            worker.join().unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e));
         }
     }
 }
 
-impl DecompressBlock for SingleThread {
-    fn next_block<R: ReadBlockInto>(&mut self, reader: &mut R) -> Result<&Block, BlockError> {
-        reader.read_block_into(&mut self.block)?;
-        self.block.decompress()?;
-        Ok(&self.block)
+pub trait ReadBgzip {
+    fn next(&mut self) -> Result<&Block, BlockError>;
+}
+
+pub struct Jumping<R: Read + Seek> {
+    decompressor: Box<dyn DecompressBlock<JumpingReadBlock<R>>>,
+    reader: JumpingReadBlock<R>,
+}
+
+impl<R: Read + Seek> ReadBgzip for Jumping<R> {
+    fn next(&mut self) -> Result<&Block, BlockError> {
+        self.decompressor.decompress_next(&mut self.reader)
     }
 }
 
-struct BlockReader<R: Read, M: ReadingMode, T: DecompressBlock> {
-    stream: R,
-    current_offset: u64,
-    reading_mode: M,
-    get_block: T,
+impl Jumping<File> {
+    pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
+        let file = File::open(path)?;
+        Self::from_stream(file, additional_threads)
+    }
 }
 
-#[doc(hidden)]
-pub trait ReadBlockInto {
-    fn read_block_into(&mut self, block: &mut Block) -> Result<(), BlockError>;
-}
-
-impl<R: Read + Seek, T: DecompressBlock> ReadBlockInto for BlockReader<R, Bouncing, T> {
-    fn read_block_into(&mut self, block: &mut Block) -> Result<(), BlockError> {
-        if let Some(new_offset) = self.reading_mode.next_offset(self.current_offset) {
-            if new_offset != self.current_offset {
-                self.stream.seek(SeekFrom::Start(new_offset))?;
-                self.current_offset = new_offset;
-            }
-            block.fill(self.current_offset, &mut self.stream)?;
-            self.current_offset += block.block_size() as u64;
-            Ok(())
+impl<R: Read + Seek> Jumping<R> {
+    pub fn from_stream(stream: R, additional_threads: u16) -> io::Result<Self> {
+        let reader = JumpingReadBlock::new(stream)?;
+        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads > 0 {
+            Box::new(SingleThread::new())
         } else {
-            Err(BlockError::EndOfStream)
-        }
+            Box::new(MultiThread::new(additional_threads))
+        };
+        Ok(Self { decompressor, reader })
+    }
+
+    pub fn set_chunks<I: IntoIterator<Item = Chunk>>(&mut self, chunks: I) {
+        self.reader.set_chunks(chunks);
+        self.decompressor.reset_queue();
+    }
+
+    pub fn make_consecutive(&mut self) {
+        self.reader.set_chunks(
+            vec![Chunk::new(VirtualOffset::from_raw(0), VirtualOffset::from_raw(std::u64::MAX))])
+    }
+
+    pub fn join(&mut self) {
+        self.decompressor.join();
     }
 }
 
-impl<R: Read, T: DecompressBlock> ReadBlockInto for BlockReader<R, Consecutive, T> {
-    fn read_block_into(&mut self, block: &mut Block) -> Result<(), BlockError> {
-        block.fill(self.current_offset, &mut self.stream)?;
-        self.current_offset += block.block_size() as u64;
-        Ok(())
+pub struct Consecutive<R: Read> {
+    decompressor: Box<dyn DecompressBlock<ConsecutiveReadBlock<R>>>,
+    reader: ConsecutiveReadBlock<R>,
+}
+
+impl Consecutive<File> {
+    pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
+        let file = File::open(path)?;
+        Ok(Self::from_stream(file, additional_threads))
+    }
+}
+
+impl<R: Read> Consecutive<R> {
+    pub fn from_stream(stream: R, additional_threads: u16) -> Self {
+        let reader = ConsecutiveReadBlock::new(stream);
+        let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads > 0 {
+            Box::new(SingleThread::new())
+        } else {
+            Box::new(MultiThread::new(additional_threads))
+        };
+        Self { decompressor, reader }
+    }
+
+    pub fn join(&mut self) {
+        self.decompressor.join();
+    }
+}
+
+impl<R: Read> ReadBgzip for Consecutive<R> {
+    fn next(&mut self) -> Result<&Block, BlockError> {
+        self.decompressor.decompress_next(&mut self.reader)
     }
 }
