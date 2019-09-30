@@ -1,12 +1,5 @@
 //! *bam* is a crate that allows to read BAM files, written completely in Rust.
 //!
-//! ## Why?
-//!
-//! Having a crate written completely in Rust reduces the number of dependencies and compilation time.
-//! Additionally, it removes the need to install additional C libraries.
-//!
-//! Errors produced by this crate are more readable and easier to catch and fix on-the-fly.
-//!
 //! ## Overview
 //!
 //! Currently, there are three readers and two writers:
@@ -17,7 +10,8 @@
 //! * [bam::BamWriter](bam_writer/struct.BamWriter.html) - writes a BAM file.
 //! * [bam::SamWriter](sam/struct.SamWriter.html) - writes a SAM file.
 //!
-//! The [bgzip](bgzip/index.html) module contains bgzip readers and writers.
+//! The [bgzip_reader](bgzip_reader/index.html) and [bgzip_writer](bgzip_writer/index.html)
+//! modules contain bgzip readers and writers.
 //!
 //! The crate also allows to conviniently work with SAM/BAM [records](record/struct.Record.html)
 //! and their fields, such as [CIGAR](record/cigar/struct.Cigar.html) or
@@ -107,12 +101,11 @@
 
 
 extern crate byteorder;
-extern crate lru_cache;
 extern crate crc32fast;
 extern crate flate2;
 
 pub mod index;
-pub mod bgzip;
+pub mod bgzip_writer;
 pub mod bgzip_reader;
 pub mod record;
 pub mod bam_reader;
@@ -163,12 +156,12 @@ pub trait RecordReader: Iterator<Item = Result<Record, Error>> {
     /// # Errors
     ///
     /// If there are no more records to iterate over, the function returns
-    /// [NoMoreRecords](../record/enum.Error.html#variant.NoMoreRecords) error.
+    /// [NoMoreRecords](record/enum.Error.html#variant.NoMoreRecords) error.
     ///
     /// If the record was corrupted, the function returns
-    /// [Corrupted](../record/enum.Error.html#variant.Corrupted) error.
+    /// [Corrupted](record/enum.Error.html#variant.Corrupted) error.
     /// If the record was truncated or the reading failed for a different reason, the function
-    /// returns [Truncated](../record/enum.Error.html#variant.Truncated) error.
+    /// returns [Truncated](record/enum.Error.html#variant.Truncated) error.
     ///
     /// If the function returns an error, the record is supposed to be cleared.
     fn read_into(&mut self, record: &mut Record) -> Result<(), Error>;

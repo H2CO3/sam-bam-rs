@@ -1,3 +1,12 @@
+//! Bgzip files (BGZF) readers.
+//!
+//! The module contains two readers: [Consecutive Reader](struct.ConsecutiveReader.html)
+//! and [Seek Reader](struct.SeekReader.html). Both readers have abilities to decompress blocks
+//! using additional threads.
+//!
+//! Use [ReadBgzip](trait.ReadBgzip.html) trait if you wish to read blocks directly
+//! (not via `io::Read`).
+
 use std::sync::{Arc, Mutex, RwLock};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write, ErrorKind, Seek, SeekFrom};
@@ -47,11 +56,11 @@ impl<T> ObjectPool<T> {
 /// Biggest possible compressed and uncompressed size
 pub const MAX_BLOCK_SIZE: usize = 65536;
 
-/// io::Error produced while reading a bgzip block.
+/// Error produced while reading a bgzip block.
 ///
 /// # Variants
 ///
-/// * `EndOfStream` - no blocks read because the stream ended.
+/// * `EndOfStream` - failed to read a block because the stream has ended.
 /// * `Corrupted(s)` - the block has incorrect header or contents.
 /// `s` contains additional information about the problem.
 /// * `IoError(e)` - the stream raised `io::Error`.
@@ -237,6 +246,7 @@ impl Block {
         self.block.len()
     }
 
+    /// Offset of the block in the compressed bgzip file.
     pub fn offset(&self) -> u64 {
         self.offset
     }
@@ -378,6 +388,15 @@ impl<R: Read + Seek> JumpingReadBlock<R> {
     fn set_chunks<I: IntoIterator<Item = Chunk>>(&mut self, chunks: I) {
         self.chunks.clear();
         self.chunks.extend(chunks);
+        for i in 1..self.chunks.len() {
+            if self.chunks[i - 1].intersect(&self.chunks[i]) {
+                panic!("Cannot set chunks: chunk {:?} intersects chunk {:?}",
+                    self.chunks[i - 1], self.chunks[i]);
+            } else if self.chunks[i - 1] >= self.chunks[i] {
+                panic!("Cannot set chunks: chunks are unordered: {:?} >= {:?}",
+                    self.chunks[i - 1], self.chunks[i]);
+            }
+        }
         self.index = 0;
         self.started = false;
     }
@@ -639,11 +658,32 @@ impl Drop for MultiThread {
     }
 }
 
+/// A trait that allows to read blocks directly.
 pub trait ReadBgzip {
+    /// Reads and returns [Block](struct.Block.html). If no blocks present, the function returns
+    /// [BlockError::EndOfStream](enum.BlockError.html#variant.EndOfStream).
+    ///
+    /// The function returns a reference to the block, not the block itself, to reuse it later,
+    /// however you can clone the block, if needed.
     fn next(&mut self) -> Result<&Block, BlockError>;
+
+    /// Returns the current block, if possible, and does not advance the stream.
     fn current(&self) -> Option<&Block>;
 }
 
+/// A bgzip reader, that allows to jump between blocks.
+///
+/// You can open the reader using [from_path](#method.from_path) or
+/// [from_stream](#method.from_stream).
+/// Additional threads are used to decompress blocks, while the
+/// main thread reads the blocks from a file/stream. If `additional_threads` is 0, the main thread
+/// will decompress blocks itself.
+///
+/// When this reader is opened, it does read not anything, until you specify reading regions
+/// (see [set_chunks](#method.set_chunks) and [make_consecutive](#method.make_consecutive)).
+///
+/// You can read the contents using `io::Read`,
+/// or read blocks using [ReadBgzip](trait.ReadBgzip.html).
 pub struct SeekReader<R: Read + Seek> {
     decompressor: Box<dyn DecompressBlock<JumpingReadBlock<R>>>,
     reader: JumpingReadBlock<R>,
@@ -653,6 +693,7 @@ pub struct SeekReader<R: Read + Seek> {
 }
 
 impl SeekReader<File> {
+    /// Opens a reader from a file.
     pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
         let file = File::open(path)?;
         Self::from_stream(file, additional_threads)
@@ -660,6 +701,7 @@ impl SeekReader<File> {
 }
 
 impl<R: Read + Seek> SeekReader<R> {
+    /// Opens a reader from a stream.
     pub fn from_stream(stream: R, additional_threads: u16) -> io::Result<Self> {
         let reader = JumpingReadBlock::new(stream)?;
         let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
@@ -675,6 +717,14 @@ impl<R: Read + Seek> SeekReader<R> {
         })
     }
 
+    /// Sets the current chunks. Each [chunk](../index/struct.Chunk.html) specifies a region of
+    /// the bgzip file. The multi-thread reader reads and decompresses blocks from the `chunks`
+    /// in advance (but does not immediately read all blocks).
+    ///
+    /// This function resets the current reading queue (from the previous `set_chunks` or
+    /// `make_consecutive` calls).
+    ///
+    /// `chunks` must be sorted and should not intersect each other.
     pub fn set_chunks<I: IntoIterator<Item = Chunk>>(&mut self, chunks: I) {
         self.reader.set_chunks(chunks);
         self.decompressor.reset_queue();
@@ -683,17 +733,30 @@ impl<R: Read + Seek> SeekReader<R> {
         self.contents_offset = 0;
     }
 
+    /// Sets the reader in a consecutive mode (starting with offset 0,
+    /// and continuing until the end of the stream).
+    ///
+    /// This function resets the current reading queue (from the previous `set_chunks` or
+    /// `make_consecutive` calls).
     pub fn make_consecutive(&mut self) {
         self.reader.set_chunks(
             vec![Chunk::new(VirtualOffset::from_raw(0), VirtualOffset::from_raw(std::u64::MAX))])
     }
 
+    /// For a multi-thread reader the function resets the decompression queue and
+    /// waits for additional threads to finish their current tasks.
+    /// For a single-thread reader it does nothing.
+    ///
+    /// It is not necessary to call this function, unless you want to keep the reader but stop the
+    /// additional threads. The reader will fail if you try to read the next blocks after `join`.
     pub fn join(&mut self) {
         self.decompressor.join();
     }
 }
 
 impl<R: Read + Seek> ReadBgzip for SeekReader<R> {
+    /// Reads the next block in a queue. Note, that if the `chunks` vector contain the same block
+    /// twice, it will be read only once.
     fn next(&mut self) -> Result<&Block, BlockError> {
         self.started = true;
         let block = self.decompressor.decompress_next(&mut self.reader)?;
@@ -765,6 +828,17 @@ impl<R: Read + Seek> Read for SeekReader<R> {
     }
 }
 
+/// Reads bgzip file in a consecutive mode. Therefore, the stream does not have to
+/// implement `io::Seek`.
+///
+/// You can open the reader using [from_path](#method.from_path) or
+/// [from_stream](#method.from_stream).
+/// Additional threads are used to decompress blocks, while the
+/// main thread reads the blocks from a file/stream. If `additional_threads` is 0, the main thread
+/// will decompress blocks itself.
+///
+/// You can read the contents using `io::Read`,
+/// or read blocks using [ReadBgzip](trait.ReadBgzip.html).
 pub struct ConsecutiveReader<R: Read> {
     decompressor: Box<dyn DecompressBlock<ConsecutiveReadBlock<R>>>,
     reader: ConsecutiveReadBlock<R>,
@@ -773,6 +847,7 @@ pub struct ConsecutiveReader<R: Read> {
 }
 
 impl ConsecutiveReader<File> {
+    /// Opens a reader from a file.
     pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> io::Result<Self> {
         let file = File::open(path)?;
         Ok(Self::from_stream(file, additional_threads))
@@ -780,6 +855,7 @@ impl ConsecutiveReader<File> {
 }
 
 impl<R: Read> ConsecutiveReader<R> {
+    /// Opens a reader from a stream.
     pub fn from_stream(stream: R, additional_threads: u16) -> Self {
         let reader = ConsecutiveReadBlock::new(stream);
         let decompressor: Box<dyn DecompressBlock<_>> = if additional_threads == 0 {
@@ -794,6 +870,12 @@ impl<R: Read> ConsecutiveReader<R> {
         }
     }
 
+    /// For a multi-thread reader the function resets the decompression queue and waits for
+    /// additional threads to finish their current tasks.
+    /// For a single-thread reader it does nothing.
+
+    /// It is not necessary to call this function, unless you want to keep the reader but stop
+    /// the additional threads. The reader will fail if you try to read the next blocks after join.
     pub fn join(&mut self) {
         self.decompressor.join();
     }

@@ -4,7 +4,7 @@ use std::io::{Write, BufWriter, Result};
 use std::fs::File;
 use std::path::Path;
 
-use super::bgzip;
+use super::bgzip_writer;
 use super::{Header, Record, RecordWriter};
 
 /// Builder of the [BamWriter](struct.BamWriter.html).
@@ -35,9 +35,9 @@ impl BamWriterBuilder {
         self
     }
 
-    /// Specify compression level (6 by default).
+    /// Specify compression level from 0 to 9 (6 by default).
     pub fn compression_level(&mut self, level: u8) -> &mut Self {
-        assert!(level <= 10, "Compression level should be at most 10");
+        assert!(level <= 9, "Compression level should be at most 9");
         self.level = level;
         self
     }
@@ -63,8 +63,8 @@ impl BamWriterBuilder {
             None => panic!("Cannot construct BAM writer without a header"),
             Some(header) => header,
         };
-        let mut writer = bgzip::SentenceWriter::new(
-            bgzip::Writer::from_stream(stream, self.level));
+        let mut writer = bgzip_writer::SentenceWriter::new(
+            bgzip_writer::Writer::from_stream(stream, self.level));
         if self.write_header {
             header.write_bam(&mut writer)?;
         }
@@ -74,7 +74,7 @@ impl BamWriterBuilder {
 }
 
 pub struct BamWriter<W: Write> {
-    writer: bgzip::SentenceWriter<W>,
+    writer: bgzip_writer::SentenceWriter<W>,
     header: Header,
 }
 

@@ -952,7 +952,7 @@ impl Record {
     }
 
     /// Write the record in SAM format to `f`. The function needs
-    /// [header](../bam_reader/struct.Header.html), as the record itself does not store reference
+    /// [header](../header/struct.Header.html), as the record itself does not store reference
     /// names.
     pub fn write_sam<W: Write>(&self, f: &mut W, header: &Header) -> io::Result<()> {
         f.write_all(&self.name)?;

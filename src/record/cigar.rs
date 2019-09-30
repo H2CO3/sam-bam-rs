@@ -199,7 +199,7 @@ impl Cigar {
     }
 
     /// Calculates reference alignment length. Consider using
-    /// [Record::calculate_end](../record/struct.Record.html#method.calculate_end), as the
+    /// [Record::calculate_end](../struct.Record.html#method.calculate_end), as the
     /// record alignment end is stored once calculated.
     pub fn calculate_ref_len(&self) -> u32 {
         self.0.iter().map(|value| match value & 0xf {

@@ -12,10 +12,11 @@ use super::bgzip_reader;
 use super::header::Header;
 use super::RecordReader;
 
-/// Iterator over records in a specific region. Implements [RecordReader](trait.RecordReader.html) trait.
+/// Iterator over records in a specific region.
+/// Implements [RecordReader](../trait.RecordReader.html) trait.
 ///
 /// If possible, create a single record using [Record::new](../record/struct.Record.html#method.new)
-/// and then use [read_into](trait.RecordReader.html#method.read_into) instead of iterating,
+/// and then use [read_into](../trait.RecordReader.html#method.read_into) instead of iterating,
 /// as it saves time on allocation.
 pub struct RegionViewer<'a, R: Read> {
     reader: &'a mut R,
@@ -129,7 +130,8 @@ impl ModificationTime {
 }
 
 /// [IndexedReader](struct.IndexedReader.html) builder. Allows to specify paths to BAM and BAI
-/// files, as well as LRU cache size and an option to ignore or warn BAI modification time check.
+/// files, as well as the number of threads
+/// and an option to ignore or warn BAI modification time check.
 pub struct IndexedReaderBuilder {
     bai_path: Option<PathBuf>,
     modification_time: ModificationTime,
@@ -137,7 +139,7 @@ pub struct IndexedReaderBuilder {
 }
 
 impl IndexedReaderBuilder {
-    /// Creates a new indexed reader builder.
+    /// Creates a new [IndexedReader](struct.IndexedReader.html) builder.
     pub fn new() -> Self {
         Self {
             bai_path: None,
@@ -153,11 +155,11 @@ impl IndexedReaderBuilder {
         self
     }
 
-    /// By default, [IndexedReader::new](struct.IndexedReader.html#method.new) and
+    /// By default, [IndexedReader::from_path](struct.IndexedReader.html#method.from_path) and
     /// [IndexedReaderBuilder::from_path](struct.IndexedReaderBuilder.html#method.from_path)
-    /// return an `io::Error` if the modification time of the BAI index is earlier
-    /// than the modification time of the BAM file.
-    /// 
+    /// returns an `io::Error` if the last modification of the BAI index was earlier
+    /// than the last modification of the BAM file.
+    ///
     /// Enum [ModificationTime](enum.ModificationTime.html) contains options to skip
     /// this check or raise a warning instead of returning an error.
     pub fn modification_time(&mut self, modification_time: ModificationTime) -> &mut Self {
@@ -165,6 +167,11 @@ impl IndexedReaderBuilder {
         self
     }
 
+    /// Sets the number of additional threads.
+    ///
+    /// Additional threads are used to decompress bgzip blocks, while the
+    /// main thread reads the blocks from a file/stream.
+    /// If `additional_threads` is 0 (default), the main thread will decompress blocks itself.
     pub fn additional_threads(&mut self, additional_threads: u16) -> &mut Self {
         self.additional_threads = additional_threads;
         self
@@ -262,11 +269,12 @@ impl IndexedReaderBuilder {
 /// You can also use [IndexedReaderBuilder](struct.IndexedReaderBuilder.html),
 /// which gives more control over loading
 /// [IndexedReader](struct.IndexedReader.html).
-/// For example you can create a reader using a different BAI path, and a different cache capacity:
+/// For example you can create a reader using a different BAI path,
+/// and with additional threads:
 /// ```rust
 /// let mut reader = bam::IndexedReader::build()
 ///     .bai_path("other_dir/test.bai")
-///     .cache_capacity(10000)
+///     .additional_threads(4)
 ///     .from_path("in.bam").unwrap();
 /// ```
 ///
@@ -368,7 +376,8 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// extern crate bam;
 ///
 /// fn main() {
-///     let reader = bam::BamReader::from_path("in.bam").unwrap();
+///     // Read "in.bam" using 4 additional threads (5 total).
+///     let reader = bam::BamReader::from_path("in.bam", 4).unwrap();
 ///     for record in reader {
 ///         let record = record.unwrap();
 ///         // Do something.
@@ -384,7 +393,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// use bam::RecordReader;
 ///
 /// fn main() {
-///     let mut reader = bam::BamReader::from_path("in.bam").unwrap();
+///     let mut reader = bam::BamReader::from_path("in.bam", 4).unwrap();
 ///     let mut record = bam::Record::new();
 ///     loop {
 ///         match reader.read_into(&mut record) {
@@ -403,6 +412,10 @@ pub struct BamReader<R: Read> {
 
 impl BamReader<File> {
     /// Creates BAM file reader from `path`.
+    ///
+    /// Additional threads are used to decompress bgzip blocks, while the
+    /// main thread reads the blocks from a file.
+    /// If `additional_threads` is 0, the main thread will decompress blocks itself.
     pub fn from_path<P: AsRef<Path>>(path: P, additional_threads: u16) -> Result<Self> {
         let stream = File::open(path)
             .map_err(|e| Error::new(e.kind(), format!("Failed to open BAM file: {}", e)))?;
@@ -412,13 +425,15 @@ impl BamReader<File> {
 
 impl<R: Read> BamReader<R> {
     /// Creates BAM file reader from `stream`. The stream does not have to support random access.
+    ///
+    /// See [from_path](#method.from_path) for more information about `additional_threads`.
     pub fn from_stream(stream: R, additional_threads: u16) -> Result<Self> {
         let mut reader = bgzip_reader::ConsecutiveReader::from_stream(stream, additional_threads);
         let header = Header::from_bam(&mut reader)?;
         Ok(Self { reader, header })
     }
 
-    /// Returns [header](../header/struct.Header.html)
+    /// Returns [header](../header/struct.Header.html).
     pub fn header(&self) -> &Header {
         &self.header
     }

@@ -86,6 +86,11 @@ impl Chunk {
     }
 
     /// Check if two chunks intersect.
+    pub fn intersect(&self, other: &Chunk) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    /// Check if two chunks intersect or one of the chunks goes right after another.
     pub fn can_combine(&self, other: &Chunk) -> bool {
         self.start <= other.end && other.start <= self.end
     }
