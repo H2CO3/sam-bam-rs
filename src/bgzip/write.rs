@@ -20,10 +20,8 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use flate2::Compression;
 use flate2::write::DeflateEncoder;
 
-/// Biggest possible compressed and uncompressed size.
 pub const MAX_BLOCK_SIZE: usize = 65536;
-
-const COMPRESSED_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - 26;
+pub const COMPRESSED_BLOCK_SIZE: usize = MAX_BLOCK_SIZE - 26;
 
 /// Bgzip writer, that allows to compress and write blocks with uncompressed
 /// size at most `MAX_BLOCK_SIZE = 65536`.

@@ -10,8 +10,7 @@
 //! * [bam::BamWriter](bam_writer/struct.BamWriter.html) - writes a BAM file.
 //! * [bam::SamWriter](sam/struct.SamWriter.html) - writes a SAM file.
 //!
-//! The [bgzip_reader](bgzip_reader/index.html) and [bgzip_writer](bgzip_writer/index.html)
-//! modules contain bgzip readers and writers.
+//! The [bgzip](bgzip/index.html) module to interact directly with bgzip files (BGZF).
 //!
 //! The crate also allows to conviniently work with SAM/BAM [records](record/struct.Record.html)
 //! and their fields, such as [CIGAR](record/cigar/struct.Cigar.html) or
@@ -105,8 +104,7 @@ extern crate crc32fast;
 extern crate flate2;
 
 pub mod index;
-pub mod bgzip_writer;
-pub mod bgzip_reader;
+pub mod bgzip;
 pub mod record;
 pub mod bam_reader;
 pub mod bam_writer;

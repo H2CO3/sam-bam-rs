@@ -20,7 +20,7 @@ use std::cmp::{min, max};
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::write::DeflateDecoder;
 
-use super::index::{Chunk, VirtualOffset};
+use crate::index::{Chunk, VirtualOffset};
 
 struct ObjectPool<T> {
     objects: Vec<T>,

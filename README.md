@@ -17,7 +17,7 @@ random genomic regions.
 * `bam::BamWriter` - writes a BAM file.
 * `bam::SamWriter` - writes a SAM file.
 
-The `bgzip_reader` and `bgzip_writer` modules contain bgzip readers and writers.
+You can use `bgzip` module to interact directly with bgzip files (BGZF).
 
 The crate also allows to conviniently work with SAM/BAM `records`
 and their fields, such as `CIGAR` or `tags`.
@@ -54,7 +54,9 @@ You can find more detailed usage [here](https://docs.rs/bam).
 You can find changelog [here](https://gitlab.com/tprodanov/bam/-/releases).
 
 ## Future versions
-* Support for multi-thread writing.
+* Support for multi-thread writing,
+* Iterating over unmapped reads for `IndexedReader`.
 
 ## Issues
-Please submit issues [here](https://gitlab.com/tprodanov/bam/issues).
+Please submit issues [here](https://gitlab.com/tprodanov/bam/issues) or send them to
+`timofey.prodanov[at]gmail.com`.

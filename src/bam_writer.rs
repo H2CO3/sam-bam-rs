@@ -4,7 +4,7 @@ use std::io::{Write, BufWriter, Result};
 use std::fs::File;
 use std::path::Path;
 
-use super::bgzip_writer;
+use super::bgzip;
 use super::{Header, Record, RecordWriter};
 
 /// Builder of the [BamWriter](struct.BamWriter.html).
@@ -63,8 +63,8 @@ impl BamWriterBuilder {
             None => panic!("Cannot construct BAM writer without a header"),
             Some(header) => header,
         };
-        let mut writer = bgzip_writer::SentenceWriter::new(
-            bgzip_writer::Writer::from_stream(stream, self.level));
+        let mut writer = bgzip::write::SentenceWriter::new(
+            bgzip::write::Writer::from_stream(stream, self.level));
         if self.write_header {
             header.write_bam(&mut writer)?;
         }
@@ -74,7 +74,7 @@ impl BamWriterBuilder {
 }
 
 pub struct BamWriter<W: Write> {
-    writer: bgzip_writer::SentenceWriter<W>,
+    writer: bgzip::write::SentenceWriter<W>,
     header: Header,
 }
 
