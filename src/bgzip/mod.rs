@@ -261,7 +261,7 @@ impl Block {
     }
 
     /// Writes the block to `stream`. The function panics if the block was not compressed.
-    pub fn write<W: Write>(&self, stream: &mut W) -> io::Result<()> {
+    pub fn dump<W: Write>(&self, stream: &mut W) -> io::Result<()> {
         assert!(self.compressed.len() == 0, "Cannot write an uncompressed block");
         const BLOCK_HEADER: &[u8; 16] = &[
              31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
@@ -280,9 +280,9 @@ impl Block {
 
     /// Reads the compressed contents from `stream`. Panics if the block is non-empty
     /// (consider using [reset](#method.reset)).
-    pub fn read<R: Read>(&mut self, offset: Option<u64>, stream: &mut R) -> Result<(), BlockError> {
+    pub fn load<R: Read>(&mut self, offset: Option<u64>, stream: &mut R) -> Result<(), BlockError> {
         assert!(self.compressed.is_empty() && self.uncompressed.is_empty(),
-            "Cannot read a non-empty block");
+            "Cannot load into a non-empty block");
         self.offset = offset;
 
         let extra_len = {
@@ -358,5 +358,46 @@ impl Block {
                 format!("CRC do not match: expected {}, observed {}", self.crc_hash, obs_crc32)));
         }
         Ok(())
+    }
+
+    /// Access uncompressed data.
+    pub fn uncompressed_data(&self) -> &[u8] {
+        &self.uncompressed
+    }
+
+    /// Access compressed data (without header and footer).
+    pub fn compressed_data(&self) -> &[u8] {
+        &self.compressed
+    }
+}
+
+pub(crate) struct ObjectPool<T> {
+    objects: Vec<T>,
+    constructor: Box<dyn Fn() -> T>,
+    taken: u64,
+    brought: u64,
+}
+
+impl<T> ObjectPool<T> {
+    pub fn new<F: 'static + Fn() -> T>(constructor: F) -> Self {
+        Self {
+            objects: vec![],
+            constructor: Box::new(constructor),
+            taken: 0,
+            brought: 0,
+        }
+    }
+
+    pub fn take(&mut self) -> T {
+        self.taken += 1;
+        match self.objects.pop() {
+            Some(object) => object,
+            None => (self.constructor)(),
+        }
+    }
+
+    pub fn bring(&mut self, object: T) {
+        self.brought += 1;
+        self.objects.push(object);
     }
 }
