@@ -31,9 +31,8 @@
 //!     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
 //!     let output = io::BufWriter::new(io::stdout());
 //!     let mut writer = bam::SamWriter::build()
-//!         .header(reader.header().clone())
 //!         .write_header(false)
-//!         .from_stream(output).unwrap();
+//!         .from_stream(output, reader.header().clone()).unwrap();
 //!
 //!     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
 //!         let record = record.unwrap();
@@ -172,4 +171,7 @@ pub trait RecordWriter {
 
     /// Finishes the stream, same as `std::mem::drop(writer)`, but can return an error.
     fn finish(&mut self) -> std::io::Result<()>;
+
+    /// Flushes contents.
+    fn flush(&mut self) -> std::io::Result<()>;
 }

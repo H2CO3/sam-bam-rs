@@ -9,7 +9,6 @@ use super::{Header, Record, RecordWriter};
 
 /// Builder of the [BamWriter](struct.BamWriter.html).
 pub struct BamWriterBuilder {
-    header: Option<Header>,
     write_header: bool,
     level: u8,
     additional_threads: u16,
@@ -18,17 +17,10 @@ pub struct BamWriterBuilder {
 impl BamWriterBuilder {
     pub fn new() -> Self {
         Self {
-            header: None,
             write_header: true,
             level: 6,
             additional_threads: 0,
         }
-    }
-
-    /// Specifies BAM header.
-    pub fn header(&mut self, header: Header) -> &mut Self {
-        self.header = Some(header);
-        self
     }
 
     /// The option to write or skip header when creating the BAM writer (writing by default).
@@ -54,24 +46,15 @@ impl BamWriterBuilder {
         self
     }
 
-    /// Creates a BAM writer from a file. If you want to use the same instance of
-    /// [BamWriterBuilder](struct.BamWriterBuilder.html) again, you need to specify header again.
-    ///
-    /// Panics if the header was not specified.
-    pub fn from_path<P: AsRef<Path>>(&mut self, path: P) -> Result<BamWriter<File>> {
+    /// Creates a BAM writer from a file and a header.
+    pub fn from_path<P: AsRef<Path>>(&mut self, path: P, header: Header)
+            -> Result<BamWriter<File>> {
         let stream = File::create(path)?;
-        self.from_stream(stream)
+        self.from_stream(stream, header)
     }
 
-    /// Creates a BAM writer from stream. If you want to use the same instance of
-    /// [BamWriterBuilder](struct.BamWriterBuilder.html) again, you need to specify header again.
-    ///
-    /// Panics if the header was not specified.
-    pub fn from_stream<W: Write>(&mut self, stream: W) -> Result<BamWriter<W>> {
-        let header = match std::mem::replace(&mut self.header, None) {
-            None => panic!("Cannot construct BAM writer without a header"),
-            Some(header) => header,
-        };
+    /// Creates a BAM writer from a stream and a header.
+    pub fn from_stream<W: Write>(&mut self, stream: W, header: Header) -> Result<BamWriter<W>> {
         let mut writer = bgzip::Writer::build()
             .additional_threads(self.additional_threads)
             .compression_level(self.level)
@@ -79,7 +62,7 @@ impl BamWriterBuilder {
         if self.write_header {
             header.write_bam(&mut writer)?;
         }
-        writer.flush()?;
+        writer.flush_contents()?;
         Ok(BamWriter { writer, header })
     }
 }
@@ -97,24 +80,29 @@ impl BamWriter<File> {
 
     /// Creates a new `BamWriter` from a path and header.
     pub fn from_path<P: AsRef<Path>>(path: P, header: Header) -> Result<Self> {
-        Self::build().header(header).from_path(path)
+        BamWriterBuilder::new().from_path(path, header)
     }
 }
 
 impl<W: Write> BamWriter<W> {
     /// Creates a new `BamWriter` from a stream and header.
     pub fn from_stream(stream: W, header: Header) -> Result<Self> {
-        BamWriter::build().header(header).from_stream(stream)
+        BamWriterBuilder::new().from_stream(stream, header)
     }
 
     /// Returns BAM header.
     pub fn header(&self) -> &Header {
         &self.header
     }
+
+    /// Consumes the writer and returns inner stream.
+    pub fn take_stream(self) -> W {
+        self.writer.take_stream()
+    }
 }
 
 impl<W: Write> RecordWriter for BamWriter<W> {
-    fn write(&mut self, record: &Record) -> std::io::Result<()> {
+    fn write(&mut self, record: &Record) -> Result<()> {
         record.write_bam(&mut self.writer)?;
         self.writer.end_context();
         Ok(())
@@ -122,5 +110,9 @@ impl<W: Write> RecordWriter for BamWriter<W> {
 
     fn finish(&mut self) -> Result<()> {
         self.writer.finish()
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.writer.flush()
     }
 }

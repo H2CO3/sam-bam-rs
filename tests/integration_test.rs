@@ -147,8 +147,7 @@ fn test_bam_to_bam(path: &str, additional_threads: u16) {
     let timer = Instant::now();
     let mut bam_writer = bam::BamWriter::build()
         .additional_threads(additional_threads)
-        .header(reader.header().clone())
-        .from_path(&bam_output)
+        .from_path(&bam_output, reader.header().clone())
         .unwrap();
     loop {
         match reader.read_into(&mut record) {

@@ -118,7 +118,6 @@ trait CompressionQueue<W: Write> {
     /// Flush contents to strem. Multi-thread writer would wait until all blocks are compressed
     /// unless it encounters an error.
     fn flush(&mut self, stream: &mut W) -> io::Result<()>;
-    fn join(&mut self);
 }
 
 struct SingleThread {
@@ -159,15 +158,13 @@ impl<W: Write> CompressionQueue<W> for SingleThread {
     fn flush(&mut self, stream: &mut W) -> io::Result<()> {
         stream.flush()
     }
-
-    fn join(&mut self) {}
 }
 
 struct MultiThread {
     working_queue: Arc<Mutex<WorkingQueue>>,
     is_finished: Arc<RwLock<bool>>,
     blocks_pool: ObjectPool<Block>,
-    workers: Vec<thread::JoinHandle<()>>,
+    _workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl MultiThread {
@@ -193,7 +190,7 @@ impl MultiThread {
             working_queue,
             is_finished,
             blocks_pool: ObjectPool::new(|| Block::new()),
-            workers,
+            _workers: workers,
         }
     }
 
@@ -255,8 +252,6 @@ impl MultiThread {
 
 impl<W: Write> CompressionQueue<W> for MultiThread {
     fn add_block_and_write(&mut self, block: Block, stream: &mut W) -> (Block, io::Result<()>) {
-        assert!(self.workers.len() > 0, "Cannot compress blocks: threads were already joined");
-
         if let Ok(mut guard) = self.working_queue.lock() {
             guard.blocks.push_back(block);
         } else {
@@ -272,14 +267,6 @@ impl<W: Write> CompressionQueue<W> for MultiThread {
     fn flush(&mut self, stream: &mut W) -> io::Result<()> {
         self.write_compressed(stream, false)?;
         stream.flush()
-    }
-
-    fn join(&mut self) {
-        *self.is_finished.write()
-            .unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e)) = true;
-        for worker in self.workers.drain(..) {
-            worker.join().unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e));
-        }
     }
 }
 
@@ -352,7 +339,7 @@ impl<T> Moveout<T> {
     }
 
     fn take(&mut self) -> T {
-        std::mem::replace(&mut self.value, None).expect("Value should be defined")
+        self.value.take().expect("Value should be defined")
     }
 
     fn set(&mut self, value: T) {
@@ -430,7 +417,7 @@ impl<W: Write> Writer<W> {
         self.context_end = self.block.uncompressed_size() as usize;
     }
 
-    /// Saves current contents into a block and adds to the compression queue.
+    /// Saves current contents into a block and adds to the queue.
     fn save_current_block(&mut self) -> io::Result<()> {
         let block = self.block.take();
         let (block, res) = self.compressor.add_block_and_write(block, &mut self.stream);
@@ -439,25 +426,22 @@ impl<W: Write> Writer<W> {
         res
     }
 
-    /// Saves current contents into a block, and adds an empty block to the compression queue.
+    /// Saves current contents (if non-empty) into a block and adds to the queue.
+    pub fn flush_contents(&mut self) -> io::Result<()> {
+        if self.block.uncompressed_size() > 0 {
+            self.save_current_block()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Saves current contents into a block, and adds an empty block to the queue.
     pub fn write_empty(&mut self) -> io::Result<()> {
         self.was_error = true;
-        if self.block.uncompressed_size() > 0 {
-            self.save_current_block()?;
-        }
+        self.flush_contents()?;
         self.save_current_block()?;
         self.was_error = false;
         Ok(())
-    }
-
-    /// For a multi-thread writer the function resets the compression queue and waits for
-    /// additional threads to finish their current tasks.
-    /// For a single-thread writer it does nothing.
-
-    /// It is not necessary to call this function, unless you want to keep the writer but stop
-    /// the additional threads. The reader will fail if you try to write new data after joining.
-    pub fn join(&mut self) {
-        self.compressor.join();
     }
 
     /// Finishes writing (writes an empty block and flushes contents).
@@ -511,9 +495,7 @@ impl<W: Write> Write for Writer<W> {
     /// Saves current buffer to a block and writes all blocks in a queue.
     fn flush(&mut self) -> io::Result<()> {
         self.was_error = true;
-        if self.block.uncompressed_size() > 0 {
-            self.save_current_block()?;
-        }
+        self.flush_contents()?;
         self.compressor.flush(&mut self.stream)?;
         self.was_error = false;
         Ok(())

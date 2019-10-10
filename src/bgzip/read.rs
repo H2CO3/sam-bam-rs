@@ -121,6 +121,10 @@ impl<R: Read> ConsecutiveReadBlock<R> {
             offset: 0,
         }
     }
+
+    fn take_stream(self) -> R {
+        self.stream
+    }
 }
 
 impl<R: Read> ReadBlock for ConsecutiveReadBlock<R> {
@@ -190,6 +194,10 @@ impl<R: Read + Seek> JumpingReadBlock<R> {
     fn chunks(&self) -> &[Chunk] {
         &self.chunks
     }
+
+    fn take_stream(self) -> R {
+        self.stream
+    }
 }
 
 impl<R: Read + Seek> ReadBlock for JumpingReadBlock<R> {
@@ -213,7 +221,6 @@ trait DecompressBlock<T: ReadBlock> {
     fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError>;
     fn get_current(&self) -> Option<&Block>;
     fn reset_queue(&mut self);
-    fn join(&mut self);
 }
 
 struct SingleThread {
@@ -248,8 +255,6 @@ impl<T: ReadBlock> DecompressBlock<T> for SingleThread {
     }
 
     fn reset_queue(&mut self) {}
-
-    fn join(&mut self) {}
 }
 
 struct MultiThread {
@@ -295,13 +300,11 @@ impl MultiThread {
 impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
     fn decompress_next(&mut self, reader: &mut T) -> Result<&Block, BlockError> {
         self.was_error = true;
-        assert!(self.workers.len() > 0, "Cannot decompress blocks: threads were already joined");
-
         let blocks_to_read = if self.reached_end {
             0
         } else if let Ok(guard) = self.working_queue.lock() {
             let ready_tasks = guard.tasks.iter().filter(|task| task.is_ready()).count();
-            self.workers.len() .saturating_sub(std::cmp::max(guard.blocks.len(), ready_tasks))
+            self.workers.len().saturating_sub(std::cmp::max(guard.blocks.len(), ready_tasks))
         } else {
             return Err(BlockError::IoError(io::Error::new(ErrorKind::Other,
                 "Panic in one of the threads")));
@@ -405,15 +408,6 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
             Err(e) => panic!("Panic in one of the threads: {:?}", e),
         }
     }
-
-    fn join(&mut self) {
-        self.was_error = true;
-        *self.is_finished.write()
-            .unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e)) = true;
-        for worker in self.workers.drain(..) {
-            worker.join().unwrap_or_else(|e| panic!("Panic in one of the threads: {:?}", e));
-        }
-    }
 }
 
 impl Drop for MultiThread {
@@ -507,14 +501,9 @@ impl<R: Read + Seek> SeekReader<R> {
             vec![Chunk::new(VirtualOffset::from_raw(0), VirtualOffset::from_raw(std::u64::MAX))])
     }
 
-    /// For a multi-thread reader the function resets the decompression queue and
-    /// waits for additional threads to finish their current tasks.
-    /// For a single-thread reader it does nothing.
-    ///
-    /// It is not necessary to call this function, unless you want to keep the reader but stop the
-    /// additional threads. The reader will fail if you try to read the next blocks after `join`.
-    pub fn join(&mut self) {
-        self.decompressor.join();
+    /// Consumes the reader and returns inner stream.
+    pub fn take_stream(self) -> R {
+        self.reader.take_stream()
     }
 }
 
@@ -634,14 +623,9 @@ impl<R: Read> ConsecutiveReader<R> {
         }
     }
 
-    /// For a multi-thread reader the function resets the decompression queue and waits for
-    /// additional threads to finish their current tasks.
-    /// For a single-thread reader it does nothing.
-
-    /// It is not necessary to call this function, unless you want to keep the reader but stop
-    /// the additional threads. The reader will fail if you try to read the next blocks after join.
-    pub fn join(&mut self) {
-        self.decompressor.join();
+    /// Consumes the reader and returns inner stream.
+    pub fn take_stream(self) -> R {
+        self.reader.take_stream()
     }
 }
 

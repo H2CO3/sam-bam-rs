@@ -1,7 +1,7 @@
 //! Indexed and consecutive BAM readers.
 
 use std::fs::File;
-use std::io::{Read, Seek, Result, Error, Write};
+use std::io::{Read, Seek, Result, Error};
 use std::io::ErrorKind::InvalidInput;
 use std::path::{Path, PathBuf};
 use std::result;
@@ -217,32 +217,37 @@ impl IndexedReaderBuilder {
 /// ```rust
 /// extern crate bam;
 ///
+/// use std::io;
+/// // You need to import RecordWriter to write records
+/// use bam::RecordWriter;
+///
 /// fn main() {
 ///     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
-///
-///     // We need to clone the header to have access to reference names as the
-///     // reader will be blocked during fetch.
-///     let header = reader.header().clone();
-///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///     let output = io::BufWriter::new(io::stdout());
+///     let mut writer = bam::SamWriter::build()
+///         .write_header(false)
+///         .from_stream(output, reader.header().clone()).unwrap();
 ///
 ///     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
-///         record.unwrap().write_sam(&mut stdout, &header).unwrap();
+///         writer.write(&record.unwrap()).unwrap();
 ///     }
 /// }
 /// ```
 ///
-/// Additionally, you can use `read_into(&mut record)` to save time on record allocation:
+/// Additionally, you can use `read_into(&mut record)` to save time on record allocation
+/// (you would need to use `RecordReader` trait):
 /// ```rust
 /// extern crate bam;
 ///
-/// // You need to import RecordReader trait
-/// use bam::RecordReader;
+/// use std::io;
+/// use bam::{RecordReader, RecordWriter};
 ///
 /// fn main() {
 ///     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
-///
-///     let header = reader.header().clone();
-///     let mut stdout = std::io::BufWriter::new(std::io::stdout());
+///     let output = io::BufWriter::new(io::stdout());
+///     let mut writer = bam::SamWriter::build()
+///         .write_header(false)
+///         .from_stream(output, reader.header().clone()).unwrap();
 ///
 ///     let mut viewer = reader.fetch(1, 100_000, 200_000).unwrap();
 ///     let mut record = bam::Record::new();
@@ -252,7 +257,7 @@ impl IndexedReaderBuilder {
 ///             Err(bam::Error::NoMoreRecords) => break,
 ///             Err(e) => panic!("{}", e),
 ///         }
-///         record.write_sam(&mut stdout, &header).unwrap();
+///         writer.write(&record).unwrap();
 ///     }
 /// }
 /// ```
@@ -305,7 +310,7 @@ impl IndexedReader<File> {
     ///
     /// Same as `Self::build().from_path(path)`.
     pub fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        Self::build().from_path(path)
+        IndexedReaderBuilder::new().from_path(path)
     }
 }
 
@@ -358,13 +363,6 @@ impl<R: Read + Seek> IndexedReader<R> {
     /// Returns [header](../header/struct.Header.html).
     pub fn header(&self) -> &Header {
         &self.header
-    }
-
-    /// Writes record in sam format.
-    /// Same as [Record::write_sam](../record/struct.Record.html#method.write_sam).
-    pub fn write_record_as_sam<W: Write>(&self, writer: &mut W, record: &record::Record)
-            -> Result<()> {
-        record.write_sam(writer, self.header())
     }
 }
 

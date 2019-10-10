@@ -37,9 +37,8 @@ fn main() {
     let mut reader = bam::IndexedReader::from_path("in.bam").unwrap();
     let output = io::BufWriter::new(io::stdout());
     let mut writer = bam::SamWriter::build()
-        .header(reader.header().clone())
         .write_header(false)
-        .from_stream(output).unwrap();
+        .from_stream(output, reader.header().clone()).unwrap();
 
     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
         let record = record.unwrap();
@@ -54,8 +53,9 @@ You can find more detailed usage [here](https://docs.rs/bam).
 You can find changelog [here](https://gitlab.com/tprodanov/bam/-/releases).
 
 ## Future versions
-* Support for multi-thread writing,
-* Iterating over unmapped reads for `IndexedReader`.
+* Iterating over unmapped reads for `IndexedReader`,
+* Support for linear index for extremely long records,
+* Constructing pileup.
 
 ## Issues
 Please submit issues [here](https://gitlab.com/tprodanov/bam/issues) or send them to

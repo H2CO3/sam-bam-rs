@@ -23,22 +23,14 @@ use super::{RecordReader, RecordWriter};
 
 /// Builder of the [SamWriter](struct.SamWriter.html).
 pub struct SamWriterBuilder {
-    header: Option<Header>,
     write_header: bool,
 }
 
 impl SamWriterBuilder {
     pub fn new() -> Self {
         Self {
-            header: None,
             write_header: true,
         }
-    }
-
-    /// Specifies SAM header.
-    pub fn header(&mut self, header: Header) -> &mut Self {
-        self.header = Some(header);
-        self
     }
 
     /// The option to write or skip header when creating the SAM writer (writing by default).
@@ -47,27 +39,16 @@ impl SamWriterBuilder {
         self
     }
 
-    /// Creates a SAM writer from a file. If you want to use the same instance of
-    /// [SamWriterBuilder](struct.SamWriterBuilder.html) again, you need to specify header again.
-    ///
-    /// Panics if the header was not specified.
-    pub fn from_path<P: AsRef<Path>>(&mut self, path: P) -> Result<SamWriter<BufWriter<File>>> {
+    /// Creates a SAM writer from a file and a header.
+    pub fn from_path<P: AsRef<Path>>(&mut self, path: P, header: Header)
+            -> Result<SamWriter<BufWriter<File>>> {
         let stream = BufWriter::new(File::create(path)?);
-        self.from_stream(stream)
+        self.from_stream(stream, header)
     }
 
-    /// Creates a SAM writer from stream. Preferably the stream should be wrapped
+    /// Creates a SAM writer from a stream and a header. Preferably the stream should be wrapped
     /// in a buffer writer, such as `BufWriter`.
-    ///
-    /// If you want to use the same instance of
-    /// [SamWriterBuilder](struct.SamWriterBuilder.html) again, you need to specify header again.
-    ///
-    /// Panics if the header was not specified.
-    pub fn from_stream<W: Write>(&mut self, mut stream: W) -> Result<SamWriter<W>> {
-        let header = match std::mem::replace(&mut self.header, None) {
-            None => panic!("Cannot construct SAM writer without a header"),
-            Some(header) => header,
-        };
+    pub fn from_stream<W: Write>(&mut self, mut stream: W, header: Header) -> Result<SamWriter<W>> {
         if self.write_header {
             header.write_text(&mut stream)?;
         }
@@ -84,8 +65,8 @@ impl SamWriterBuilder {
 /// or using a [builder](struct.SamWriterBuilder.html)
 /// ```rust
 /// let writer = SamWriter::build()
-///     .header(header)
-///     .from_path("out.sam").unwrap();
+///     .write_header(false)
+///     .from_path("out.sam", header).unwrap();
 /// ```
 ///
 /// You can clone a [header](../header/struct.Header.html) from SAM/BAM reader or
@@ -113,7 +94,7 @@ impl SamWriter<BufWriter<File>> {
 
     /// Creates a SAM writer from a path and a header.
     pub fn from_path<P: AsRef<Path>>(path: P, header: Header) -> Result<Self> {
-        SamWriterBuilder::new().header(header).from_path(path)
+        SamWriterBuilder::new().from_path(path, header)
     }
 }
 
@@ -121,7 +102,7 @@ impl<W: Write> SamWriter<W> {
     /// Creates a SAM writer from a stream and a header. Preferably the stream should be wrapped
     /// in a buffer writer, such as `BufWriter`.
     pub fn from_stream(stream: W, header: Header) -> Result<Self> {
-        SamWriterBuilder::new().header(header).from_stream(stream)
+        SamWriterBuilder::new().from_stream(stream, header)
     }
 
     /// Returns [header](../header/struct.Header.html).
@@ -133,6 +114,12 @@ impl<W: Write> SamWriter<W> {
     pub fn flush(&mut self) -> Result<()> {
         self.stream.flush()
     }
+
+    /// Consumes the writer and returns inner stream.
+    pub fn take_stream(mut self) -> W {
+        let _ignore = self.stream.flush();
+        self.stream
+    }
 }
 
 impl<W: Write> RecordWriter for SamWriter<W> {
@@ -142,6 +129,10 @@ impl<W: Write> RecordWriter for SamWriter<W> {
     }
 
     fn finish(&mut self) -> Result<()> {
+        self.flush()
+    }
+
+    fn flush(&mut self) -> Result<()> {
         self.flush()
     }
 }
@@ -199,6 +190,11 @@ impl<R: BufRead> SamReader<R> {
     /// Returns [header](../header/struct.Header.html).
     pub fn header(&self) -> &Header {
         &self.header
+    }
+
+    /// Consumes the reader and returns inner stream.
+    pub fn take_stream(self) -> R {
+        self.stream
     }
 }
 
