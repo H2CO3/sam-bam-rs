@@ -368,10 +368,10 @@ impl<T> std::ops::DerefMut for Moveout<T> {
     }
 }
 
-/// Write bgzip file.
+/// Writes bgzip file.
 ///
 /// You can create a writer using [from_path](#method.from_path) or
-/// using [WriterBuilder](#method.build).
+/// using [WriterBuilder](struct.WriterBuilder.html).
 /// Additional threads are used to compress blocks, while the
 /// main thread reads the writes to a file/stream. If `additional_threads` is 0, the main thread
 /// will compress blocks itself.
@@ -434,7 +434,7 @@ impl<W: Write> Writer<W> {
         res
     }
 
-    /// Saves current contents (if non-empty) into a block and adds to the queue.
+    /// Saves current contents (if non-empty) into a block and adds to the compression queue.
     pub fn flush_contents(&mut self) -> io::Result<()> {
         if self.block.uncompressed_size() > 0 {
             self.save_current_block()

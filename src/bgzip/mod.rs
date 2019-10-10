@@ -1,3 +1,5 @@
+//! A module that allows to read and write bgzip files directly, as well as modify bgzip blocks.
+
 use std::io::{self, Read, Write, ErrorKind};
 use std::cmp::min;
 use std::fmt::{self, Display, Debug, Formatter};
@@ -123,7 +125,7 @@ impl BlockState {
     }
 }
 
-/// Biggest possible size of the compressed and uncompressed block.
+/// Biggest possible size of the compressed and uncompressed block (`= 65536`).
 pub const MAX_BLOCK_SIZE: usize = 65536;
 
 const HEADER_SIZE: usize = 12;
@@ -133,12 +135,15 @@ const FOOTER_SIZE: usize = 8;
 const WRAPPER_SIZE: usize = HEADER_SIZE + MIN_EXTRA_SIZE + FOOTER_SIZE;
 
 /// Biggest possible length of the compressed data (excluding header + footer).
-/// Equal to `MAX_BLOCK_SIZE - 26 = 65510`.
+/// Equal to [MAX_BLOCK_SIZE](constant.MAX_BLOCK_SIZE.html) `- 26 = 65510`.
 pub const MAX_COMPRESSED_SIZE: usize = MAX_BLOCK_SIZE - WRAPPER_SIZE;
 
-/// Maximal size of the compressed data.
+/// A bgzip block, that can contain compressed, uncompressed data, or both.
+///
+/// You can extend uncompressed data using [extend_contents](#method.extend_contents), and
+/// and then compress the block using [compress](#method.compress).
 pub struct Block {
-    // Uncompressed contents, max size = `MAX_BLOCK_SIZE`.
+    // Uncompressed contents, max size = [MAX_BLOCK_SIZE](constant.MAX_BLOCK_SIZE.html).
     uncompressed: Vec<u8>,
     // Compressed contents + footer (empty if uncompressed),
     // max size = `MAX_COMPRESSED_SIZE + FOOTER_SIZE`.
@@ -160,15 +165,15 @@ impl Block {
         }
     }
 
-    /// Resets a block.
+    /// Resets a block (clears both compressed and uncompressed data).
     pub fn reset(&mut self) {
         self.uncompressed.clear();
         self.compressed.clear();
         self.offset = None;
     }
 
-    /// Resets compressed data, if present. This function is needed if you want to update
-    /// uncompressed contents.
+    /// Resets compressed data, if present. This function is needed if you want to
+    /// [update uncompressed contents](#method.extend_contents).
     pub fn reset_compression(&mut self) {
         self.compressed.clear();
     }
@@ -182,13 +187,15 @@ impl Block {
     }
 
     /// Extends uncompressed contents and returns the number of consumed bytes. The only case when
-    /// the number of consumed bytes is less then the size of the `buf` is when the contents
-    /// reached maximum size `MAX_BLOCK_SIZE`. However, it is not recommended to fill the
-    /// contents completely to `MAX_BLOCK_SIZE` as the compressed size may become too big
-    /// (bigger than `MAX_COMPRESSED_SIZE`).
+    /// the number of consumed bytes is less then the size of the `buf` is when the content size
+    /// reaches maximum size [MAX_BLOCK_SIZE](constant.MAX_BLOCK_SIZE.html).
+    /// However, it is not recommended to fill the
+    /// contents completely to [MAX_BLOCK_SIZE](constant.MAX_BLOCK_SIZE.html)
+    ///  as the compressed size may become too big
+    /// (bigger than [MAX_COMPRESSED_SIZE](constant.MAX_COMPRESSED_SIZE.html)).
     ///
-    /// This function panics if the block contains compressed data. Consider using
-    /// [reset_compression](#method.reset_compression).
+    /// This function panics if the block contains compressed data
+    /// (see [reset_compression](#method.reset_compression)).
     pub fn extend_contents(&mut self, buf: &[u8]) -> usize {
         assert!(self.compressed.len() == 0, "Cannot update contents, as the block was compressed. \
             Consider using reset_compression()");
@@ -198,7 +205,7 @@ impl Block {
     }
 
     /// Returns the size of the uncompressed data
-    /// (this works even if the block was never decompressed).
+    /// (this works even if the block was not decompressed).
     pub fn uncompressed_size(&self) -> u32 {
         if !self.uncompressed.is_empty() {
             self.uncompressed.len() as u32
@@ -210,13 +217,13 @@ impl Block {
     }
 
     /// Returns the size of the compressed data. If the block was not compressed, the function
-    /// returns zero. Note, that compressed data does not include
+    /// returns zero. Note, that the compressed size does not include
     /// header and footer of the bgzip block.
     pub fn compressed_size(&self) -> u32 {
         self.compressed.len().saturating_sub(FOOTER_SIZE) as u32
     }
 
-    /// Returns the size of the block (compressed data and header and footer of the bgzip block).
+    /// Returns the size of the block (sum size of compressed data, header and footer).
     /// Returns None if the block was not compressed yet.
     pub fn block_size(&self) -> Option<u32> {
         if self.compressed.is_empty() {
@@ -241,10 +248,11 @@ impl Block {
         }
     }
 
-    /// Compressed block contents. Note that if the contents are empty, the function will compress
+    /// Compresses block contents. Note that if the contents are empty, the function will compress
     /// them into a valid block (see [make_empty](#method.make_empty)).
     ///
-    /// If the compressed size is bigger than `MAX_COMPRESSED_SIZE`, the function returns
+    /// If the compressed size is bigger than
+    /// [MAX_COMPRESSED_SIZE](constant.MAX_COMPRESSED_SIZE.html), the function returns
     /// `WriteZero`. Function panics if the block is already compressed.
     pub fn compress(&mut self, compression: flate2::Compression) -> io::Result<()> {
         assert!(self.compressed.len() == 0, "Cannot compress an already compressed block");
@@ -322,7 +330,7 @@ impl Block {
         Ok(())
     }
 
-    /// Decompressed block contents. This function panics if the block was already decompressed or
+    /// Decompresses block contents. This function panics if the block was already decompressed or
     /// if the block is empty.
     pub fn decompress(&mut self) -> Result<(), BlockError> {
         assert!(self.compressed.len() > 0, "Cannot decompress an empty block");
@@ -359,8 +367,7 @@ impl Block {
             }
         }
 
-        let exp_crc32 = (&self.compressed[compressed_size - 8..compressed_size - 4])
-            .read_u32::<LittleEndian>().unwrap();
+        let exp_crc32 = self.crc32();
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&self.uncompressed);
         let obs_crc32 = hasher.finalize();
@@ -376,14 +383,23 @@ impl Block {
         &self.uncompressed
     }
 
-    /// Access compressed data (without header and footer).
+    /// Access compressed data (without header and footer). Panics if the block is not compressed.
     pub fn compressed_data(&self) -> &[u8] {
         &self.compressed[..self.compressed.len() - FOOTER_SIZE]
     }
 
-    /// Truncates block contents on `first_size`, writes the remaining data into `second_part`,
-    /// and returns the size of `second_part`.
-    fn split_contents(&mut self, first_size: usize, second_part: &mut [u8]) -> usize {
+    /// Returns CRC32 hash of the uncompressed data. Panics if the block is not compressed.
+    pub fn crc32(&self) -> u32 {
+        (&self.compressed[self.compressed.len() - 8..self.compressed.len() - 4])
+            .read_u32::<LittleEndian>().unwrap()
+    }
+
+    /// Truncates uncompressed contents on `first_size`,
+    /// writes the remaining data into `second_part`, and
+    /// returns the number of bytes written into `second_part`.
+    ///
+    /// Panics, if the `second_part` is not big enough.
+    pub fn split_contents(&mut self, first_size: usize, second_part: &mut [u8]) -> usize {
         assert!(self.uncompressed.len() >= first_size,
             "Cannot split a block with: size {} < {}", self.uncompressed.len(), first_size);
         assert!(self.compressed.len() == 0, "Cannot split an already compressed block");

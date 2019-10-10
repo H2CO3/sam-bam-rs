@@ -424,8 +424,8 @@ impl Drop for MultiThread {
 
 /// A trait that allows to read blocks directly.
 pub trait ReadBgzip {
-    /// Reads and returns [Block](struct.Block.html). If no blocks present, the function returns
-    /// [BlockError::EndOfStream](enum.BlockError.html#variant.EndOfStream).
+    /// Reads and returns [Block](../struct.Block.html). If no blocks present, the function returns
+    /// [BlockError::EndOfStream](../enum.BlockError.html#variant.EndOfStream).
     ///
     /// The function returns a reference to the block, not the block itself, to reuse it later,
     /// however you can clone the block, if needed.
@@ -481,7 +481,7 @@ impl<R: Read + Seek> SeekReader<R> {
         })
     }
 
-    /// Sets the current chunks. Each [chunk](../index/struct.Chunk.html) specifies a region of
+    /// Sets the current chunks. Each [chunk](../..//index/struct.Chunk.html) specifies a region of
     /// the bgzip file. The multi-thread reader reads and decompresses blocks from the `chunks`
     /// in advance (but does not immediately read all blocks).
     ///
