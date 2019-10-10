@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex, RwLock};
+//! Bgzip files (BGZF) writer.
+
+use std::sync::{Arc, Weak, Mutex, RwLock};
 use std::collections::VecDeque;
 use std::io::{self, Write, ErrorKind};
 use std::thread;
@@ -35,7 +37,7 @@ struct WorkingQueue {
 
 struct Worker {
     worker_id: WorkerId,
-    working_queue: Arc<Mutex<WorkingQueue>>,
+    working_queue: Weak<Mutex<WorkingQueue>>,
     is_finished: Arc<RwLock<bool>>,
     compression: flate2::Compression,
 }
@@ -43,7 +45,13 @@ struct Worker {
 impl Worker {
     fn run(&mut self) {
         'outer: while !self.is_finished.read().map(|guard| *guard).unwrap_or(true) {
-            let block = if let Ok(mut guard) = self.working_queue.lock() {
+            let queue = match self.working_queue.upgrade() {
+                Some(value) => value,
+                // Writer was dropped.
+                None => break,
+            };
+
+            let block = if let Ok(mut guard) = queue.lock() {
                 if let Some(block) = guard.blocks.pop_front() {
                     guard.tasks.push_back(Task::NotReady(self.worker_id));
                     Some(block)
@@ -51,7 +59,7 @@ impl Worker {
                     None
                 }
             } else {
-                // Panic in another thread
+                // Panic in another thread.
                 break
             };
 
@@ -71,7 +79,7 @@ impl Worker {
                     let res1 = block.compress(self.compression);
                     let res2 = second_half.compress(self.compression);
 
-                    if let Ok(mut guard) = self.working_queue.lock() {
+                    if let Ok(mut guard) = queue.lock() {
                         // Insert two Ready Tasks.
                         for i in 0..guard.tasks.len() {
                             if guard.tasks[i].is_not_ready(self.worker_id) {
@@ -82,14 +90,14 @@ impl Worker {
                         }
                         panic!("Task handler not found for worker {}", self.worker_id.0);
                     } else {
-                        // Panic in another thread
+                        // Panic in another thread.
                         break
                     };
                 },
                 res => res,
             };
 
-            if let Ok(mut guard) = self.working_queue.lock() {
+            if let Ok(mut guard) = queue.lock() {
                 for task in guard.tasks.iter_mut().rev() {
                     if task.is_not_ready(self.worker_id) {
                         std::mem::replace(task, Task::Ready((block, res)));
@@ -98,7 +106,7 @@ impl Worker {
                 }
                 panic!("Task handler not found for worker {}", self.worker_id.0);
             } else {
-                // Panic in another thread
+                // Panic in another thread.
                 break
             };
         }
@@ -176,7 +184,7 @@ impl MultiThread {
         let workers = (0..threads).map(|i| {
             let mut worker = Worker {
                 worker_id: WorkerId(i),
-                working_queue: Arc::clone(&working_queue),
+                working_queue: Arc::downgrade(&working_queue),
                 is_finished: Arc::clone(&is_finished),
                 compression,
             };
@@ -433,6 +441,15 @@ impl<W: Write> Writer<W> {
         } else {
             Ok(())
         }
+    }
+
+    /// Adds a block to the compression queue and returns an empty block and
+    /// a result of compression/writing.
+    ///
+    /// If you use [write](#method.write) as well as [write_block](#method.write_block),
+    /// call [flush_contents](#method.flush_contents) before using `write_block`.
+    pub fn write_block(&mut self, block: Block) -> (Block, io::Result<()>) {
+        self.compressor.add_block_and_write(block, &mut self.stream)
     }
 
     /// Saves current contents into a block, and adds an empty block to the queue.

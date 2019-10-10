@@ -7,7 +7,7 @@
 //! Use [ReadBgzip](trait.ReadBgzip.html) trait if you wish to read blocks directly
 //! (not via `io::Read`).
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Weak, Mutex, RwLock};
 use std::collections::VecDeque;
 use std::io::{self, Read, ErrorKind, Seek, SeekFrom};
 use std::thread;
@@ -53,14 +53,20 @@ struct WorkingQueue {
 
 struct Worker {
     worker_id: WorkerId,
-    working_queue: Arc<Mutex<WorkingQueue>>,
+    working_queue: Weak<Mutex<WorkingQueue>>,
     is_finished: Arc<RwLock<bool>>,
 }
 
 impl Worker {
     fn run(&mut self) {
         'outer: while !self.is_finished.read().map(|guard| *guard).unwrap_or(true) {
-            let block = if let Ok(mut guard) = self.working_queue.lock() {
+            let queue = match self.working_queue.upgrade() {
+                Some(value) => value,
+                // Reader was dropped
+                None => break,
+            };
+
+            let block = if let Ok(mut guard) = queue.lock() {
                 if let Some(block) = guard.blocks.pop_front() {
                     guard.tasks.push_back(Task::NotReady((self.worker_id, TaskStatus::Waiting)));
                     Some(block)
@@ -80,7 +86,7 @@ impl Worker {
             };
 
             let res = block.decompress();
-            if let Ok(mut guard) = self.working_queue.lock() {
+            if let Ok(mut guard) = queue.lock() {
                 for task in guard.tasks.iter_mut().rev() {
                     match task {
                         Task::NotReady((worker_id, task_status))
@@ -276,7 +282,7 @@ impl MultiThread {
         let workers = (0..threads).map(|i| {
             let mut worker = Worker {
                 worker_id: WorkerId(i),
-                working_queue: Arc::clone(&working_queue),
+                working_queue: Arc::downgrade(&working_queue),
                 is_finished: Arc::clone(&is_finished),
             };
             thread::Builder::new()
