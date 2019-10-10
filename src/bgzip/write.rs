@@ -289,14 +289,14 @@ impl Drop for MultiThread {
     }
 }
 
-/// [Bgzip writer](struct.BgzipWriter.html) builder.
+/// [Bgzip writer](struct.Writer.html) builder.
 /// Allows to specify compression level and the number of additional threads.
-pub struct BgzipWriterBuilder {
+pub struct WriterBuilder {
     additional_threads: u16,
     compression: flate2::Compression,
 }
 
-impl BgzipWriterBuilder {
+impl WriterBuilder {
     pub fn new() -> Self {
         Self {
             additional_threads: 0,
@@ -323,19 +323,19 @@ impl BgzipWriterBuilder {
     }
 
     /// Creates a writer from file.
-    pub fn from_path<P: AsRef<Path>>(&self, path: P) -> io::Result<BgzipWriter<File>> {
+    pub fn from_path<P: AsRef<Path>>(&self, path: P) -> io::Result<Writer<File>> {
         let file = File::create(path)?;
         Ok(self.from_stream(file))
     }
 
     /// Creates a writer from stream.
-    pub fn from_stream<W: Write>(&self, stream: W) -> BgzipWriter<W> {
+    pub fn from_stream<W: Write>(&self, stream: W) -> Writer<W> {
         let compressor: Box<dyn CompressionQueue<W>> = if self.additional_threads == 0 {
             Box::new(SingleThread::new(self.compression))
         } else {
             Box::new(MultiThread::new(self.additional_threads, self.compression))
         };
-        BgzipWriter::new(stream, compressor)
+        Writer::new(stream, compressor)
     }
 }
 
@@ -376,14 +376,14 @@ impl<T> std::ops::DerefMut for Moveout<T> {
 /// Write bgzip file.
 ///
 /// You can create a writer using [from_path](#method.from_path) or
-/// using [BgzipWriterBuilder](#method.build).
+/// using [WriterBuilder](#method.build).
 /// Additional threads are used to compress blocks, while the
 /// main thread reads the writes to a file/stream. If `additional_threads` is 0, the main thread
 /// will compress blocks itself.
 ///
 /// It is highly not recommended to continue writing after an error, as in that case the writer
 /// may miss some blocks.
-pub struct BgzipWriter<W: Write> {
+pub struct Writer<W: Write> {
     stream: W,
     compressor: Box<dyn CompressionQueue<W>>,
     block: Moveout<Block>,
@@ -392,23 +392,17 @@ pub struct BgzipWriter<W: Write> {
     was_error: bool,
 }
 
-impl BgzipWriter<File> {
-    /// Creates a [BgzipWriter Builder](struct.BgzipWriterBuilder.html).
-    pub fn build() -> BgzipWriterBuilder {
-        BgzipWriterBuilder::new()
+impl Writer<File> {
+    /// Creates a [Writer Builder](struct.WriterBuilder.html).
+    pub fn build() -> WriterBuilder {
+        WriterBuilder::new()
     }
 
     /// Opens a writer from a file with default parameters
-    /// (see [BgzipWriter Builder](struct.BgzipWriterBuilder.html)).
+    /// (see [Writer Builder](struct.WriterBuilder.html)).
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        BgzipWriterBuilder::new()
+        WriterBuilder::new()
             .from_path(path)
-    }
-
-    /// Ends current context: marks this point as more preferable when
-    /// splitting bgzip blocks.
-    pub fn end_context(&mut self) {
-        self.context_end = self.block.uncompressed_size() as usize;
     }
 }
 
@@ -419,7 +413,7 @@ const MAX_TAIL_SIZE: usize = 10000;
 /// context will be ignored.
 const MIN_BUFFER_SIZE: usize = MAX_BUFFER_SIZE - MAX_TAIL_SIZE;
 
-impl<W: Write> BgzipWriter<W> {
+impl<W: Write> Writer<W> {
     fn new(stream: W, compressor: Box<dyn CompressionQueue<W>>) -> Self {
         Self {
             stream, compressor,
@@ -428,6 +422,12 @@ impl<W: Write> BgzipWriter<W> {
             buffer: vec![0; MAX_TAIL_SIZE],
             was_error: false,
         }
+    }
+
+    /// Ends current context: marks this point as more preferable when
+    /// splitting bgzip blocks.
+    pub fn end_context(&mut self) {
+        self.context_end = self.block.uncompressed_size() as usize;
     }
 
     /// Saves current contents into a block and adds to the compression queue.
@@ -479,7 +479,7 @@ impl<W: Write> BgzipWriter<W> {
     }
 }
 
-impl<W: Write> Write for BgzipWriter<W> {
+impl<W: Write> Write for Writer<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.was_error = true;
         let block_size = self.block.uncompressed_size() as usize;
@@ -520,7 +520,7 @@ impl<W: Write> Write for BgzipWriter<W> {
     }
 }
 
-impl<W: Write> Drop for BgzipWriter<W> {
+impl<W: Write> Drop for Writer<W> {
     fn drop(&mut self) {
         if !self.was_error {
             let _ignore = self.finish();

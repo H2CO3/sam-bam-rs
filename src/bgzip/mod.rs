@@ -8,8 +8,6 @@ use flate2::write::{DeflateDecoder, DeflateEncoder};
 
 pub mod read;
 pub mod write;
-// Temporary mod. TODO remove.
-pub mod write1;
 
 /// Error produced while reading or decompressing a bgzip block.
 ///
@@ -447,4 +445,4 @@ const SLEEP_TIME: Duration = Duration::from_nanos(50);
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 pub use read::{SeekReader, ConsecutiveReader, ReadBgzip};
-pub use write1::{BgzipWriter, BgzipWriterBuilder};
+pub use write::{Writer, WriterBuilder};
