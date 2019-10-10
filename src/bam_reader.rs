@@ -185,7 +185,7 @@ impl IndexedReaderBuilder {
             .unwrap_or_else(|| PathBuf::from(format!("{}.bai", bam_path.display())));
         self.modification_time.check(&bam_path, &bai_path)?;
 
-        let reader = bgzip::read::SeekReader::from_path(bam_path, self.additional_threads)
+        let reader = bgzip::SeekReader::from_path(bam_path, self.additional_threads)
             .map_err(|e| Error::new(e.kind(), format!("Failed to open BAM file: {}", e)))?;
 
         let index = Index::from_path(bai_path)
@@ -198,7 +198,7 @@ impl IndexedReaderBuilder {
     /// `check_time` and `bai_path` values are ignored.
     pub fn from_streams<R: Seek + Read, T: Read>(&self, bam_stream: R, bai_stream: T)
             -> Result<IndexedReader<R>> {
-        let reader = bgzip::read::SeekReader::from_stream(bam_stream, self.additional_threads)
+        let reader = bgzip::SeekReader::from_stream(bam_stream, self.additional_threads)
             .map_err(|e| Error::new(e.kind(), format!("Failed to read BAM stream: {}", e)))?;
 
         let index = Index::from_stream(bai_stream)
@@ -290,7 +290,7 @@ impl IndexedReaderBuilder {
 /// You can also ignore the error completely: `.modification_time(ModificationTime::Ignore)`.
 
 pub struct IndexedReader<R: Read + Seek> {
-    reader: bgzip::read::SeekReader<R>,
+    reader: bgzip::SeekReader<R>,
     header: Header,
     index: Index,
 }
@@ -310,7 +310,7 @@ impl IndexedReader<File> {
 }
 
 impl<R: Read + Seek> IndexedReader<R> {
-    fn new(mut reader: bgzip::read::SeekReader<R>, index: Index) -> Result<Self> {
+    fn new(mut reader: bgzip::SeekReader<R>, index: Index) -> Result<Self> {
         reader.make_consecutive();
         let header = Header::from_bam(&mut reader)?;
         Ok(Self { reader, header, index })
@@ -319,7 +319,7 @@ impl<R: Read + Seek> IndexedReader<R> {
     /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
     /// and intersecting half-open interval `[start-end)`.
     pub fn fetch<'a>(&'a mut self, ref_id: u32, start: u32, end: u32)
-            -> Result<RegionViewer<'a, bgzip::read::SeekReader<R>>> {
+            -> Result<RegionViewer<'a, bgzip::SeekReader<R>>> {
         self.fetch_by(ref_id, start, end, |_| true)
     }
 
@@ -330,7 +330,7 @@ impl<R: Read + Seek> IndexedReader<R> {
     /// as some records will be removed without allocating new memory and without calculating
     /// alignment length.
     pub fn fetch_by<'a, F>(&'a mut self, ref_id: u32, start: u32, end: u32, predicate: F)
-        -> Result<RegionViewer<'a, bgzip::read::SeekReader<R>>>
+        -> Result<RegionViewer<'a, bgzip::SeekReader<R>>>
     where F: 'static + Fn(&record::Record) -> bool
     {
         if start > end {
@@ -406,7 +406,7 @@ impl<R: Read + Seek> IndexedReader<R> {
 /// }
 /// ```
 pub struct BamReader<R: Read> {
-    reader: bgzip::read::ConsecutiveReader<R>,
+    reader: bgzip::ConsecutiveReader<R>,
     header: Header,
 }
 
@@ -428,7 +428,7 @@ impl<R: Read> BamReader<R> {
     ///
     /// See [from_path](#method.from_path) for more information about `additional_threads`.
     pub fn from_stream(stream: R, additional_threads: u16) -> Result<Self> {
-        let mut reader = bgzip::read::ConsecutiveReader::from_stream(stream, additional_threads);
+        let mut reader = bgzip::ConsecutiveReader::from_stream(stream, additional_threads);
         let header = Header::from_bam(&mut reader)?;
         Ok(Self { reader, header })
     }

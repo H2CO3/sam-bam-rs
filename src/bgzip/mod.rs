@@ -9,7 +9,7 @@ use flate2::write::{DeflateDecoder, DeflateEncoder};
 pub mod read;
 pub mod write;
 // Temporary mod. TODO remove.
-mod write1;
+pub mod write1;
 
 /// Error produced while reading or decompressing a bgzip block.
 ///
@@ -175,13 +175,21 @@ impl Block {
         self.compressed.clear();
     }
 
+    /// Makes a block a compressed block with empty contents. It is different from
+    /// [reset](#method.reset) as the block will have valid compressed data and can be written.
+    pub fn make_empty(&mut self) {
+        self.uncompressed.clear();
+        self.compressed.clear();
+        self.compressed.extend(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
     /// Extends uncompressed contents and returns the number of consumed bytes. The only case when
     /// the number of consumed bytes is less then the size of the `buf` is when the contents
     /// reached maximum size `MAX_BLOCK_SIZE`. However, it is not recommended to fill the
     /// contents completely to `MAX_BLOCK_SIZE` as the compressed size may become too big
     /// (bigger than `MAX_COMPRESSED_SIZE`).
     ///
-    /// This function panics, if the block contains compressed data. Consider using
+    /// This function panics if the block contains compressed data. Consider using
     /// [reset_compression](#method.reset_compression).
     pub fn extend_contents(&mut self, buf: &[u8]) -> usize {
         assert!(self.compressed.len() == 0, "Cannot update contents, as the block was compressed. \
@@ -235,21 +243,25 @@ impl Block {
         }
     }
 
-    /// Compressed block contents. This function panics if the block was already compressed or
-    /// the uncompressed contents are empty.
+    /// Compressed block contents. Note that if the contents are empty, the function will compress
+    /// them into a valid block (see [make_empty](#method.make_empty)).
     ///
     /// If the compressed size is bigger than `MAX_COMPRESSED_SIZE`, the function returns
-    /// `WriteZero`.
+    /// `WriteZero`. Function panics if the block is already compressed.
     pub fn compress(&mut self, compression: flate2::Compression) -> io::Result<()> {
-        assert!(self.uncompressed.len() > 0, "Cannot compress an empty block");
         assert!(self.compressed.len() == 0, "Cannot compress an already compressed block");
+        if self.uncompressed.len() == 0 {
+            self.make_empty();
+            return Ok(())
+        }
 
         unsafe {
             self.compressed.set_len(MAX_COMPRESSED_SIZE);
         }
         let mut encoder = DeflateEncoder::new(&mut self.compressed[..], compression);
         encoder.write_all(&self.uncompressed)?;
-        encoder.finish()?;
+        let remaining_size = encoder.finish()?.len();
+        self.compressed.truncate(MAX_COMPRESSED_SIZE - remaining_size);
 
         let mut crc_hasher = crc32fast::Hasher::new();
         crc_hasher.update(&self.uncompressed);
@@ -260,7 +272,7 @@ impl Block {
 
     /// Writes the block to `stream`. The function panics if the block was not compressed.
     pub fn dump<W: Write>(&self, stream: &mut W) -> io::Result<()> {
-        assert!(self.compressed.len() == 0, "Cannot write an uncompressed block");
+        assert!(self.compressed.len() > 0, "Cannot write an uncompressed block");
         let block_size = self.block_size().expect("Block size should be defined already") - 1;
         let block_header: &[u8; 18] = &[
             31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
@@ -371,13 +383,26 @@ impl Block {
         &self.compressed[..self.compressed.len() - FOOTER_SIZE]
     }
 
+    /// Truncates block contents on `first_size`, writes the remaining data into `second_part`,
+    /// and returns the size of `second_part`.
+    fn split_contents(&mut self, first_size: usize, second_part: &mut [u8]) -> usize {
+        assert!(self.uncompressed.len() >= first_size,
+            "Cannot split a block with: size {} < {}", self.uncompressed.len(), first_size);
+        assert!(self.compressed.len() == 0, "Cannot split an already compressed block");
+
+        let second_size = self.uncompressed.len() - first_size;
+        second_part[..second_size].copy_from_slice(&self.uncompressed[first_size..]);
+        self.uncompressed.truncate(first_size);
+        second_size
+    }
+
     /// The function trims the contents of `self`, and returns the second half in a new `Block`.
     /// The function panics if the initial block was compressed
     /// or its uncompressed size is less than 2 bytes.
     pub fn split_into_two(&mut self) -> Block {
         assert!(self.uncompressed.len() > 1, "Cannot split a block with size < 2 bytes");
         assert!(self.compressed.len() == 0, "Cannot split an already compressed block");
-        
+
         let first_half_size = self.uncompressed.len() / 2;
         let mut second_half = Block::new();
         assert!(second_half.extend_contents(&self.uncompressed[first_half_size..])
@@ -420,3 +445,6 @@ impl<T> ObjectPool<T> {
 
 const SLEEP_TIME: Duration = Duration::from_nanos(50);
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+pub use read::{SeekReader, ConsecutiveReader, ReadBgzip};
+pub use write1::{BgzipWriter, BgzipWriterBuilder};
