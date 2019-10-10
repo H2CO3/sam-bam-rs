@@ -1,12 +1,15 @@
 use std::io::{self, Read, Write, ErrorKind};
 use std::cmp::min;
 use std::fmt::{self, Display, Debug, Formatter};
+use std::time::Duration;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use flate2::write::{DeflateDecoder, DeflateEncoder};
 
 pub mod read;
 pub mod write;
+// Temporary mod. TODO remove.
+mod write1;
 
 /// Error produced while reading or decompressing a bgzip block.
 ///
@@ -139,13 +142,10 @@ pub const MAX_COMPRESSED_SIZE: usize = MAX_BLOCK_SIZE - WRAPPER_SIZE;
 pub struct Block {
     // Uncompressed contents, max size = `MAX_BLOCK_SIZE`.
     uncompressed: Vec<u8>,
-    // Store uncompressed size in case we need to write a block without decompressing it.
-    uncompressed_size: u32,
-    // Compressed contents, max size = `MAX_COMPRESSED_SIZE`.
+    // Compressed contents + footer (empty if uncompressed),
+    // max size = `MAX_COMPRESSED_SIZE + FOOTER_SIZE`.
     compressed: Vec<u8>,
 
-    // CRC32 hash of the contents.
-    crc_hash: u32,
     // Buffer used to read the header.
     buffer: Vec<u8>,
     offset: Option<u64>,
@@ -156,9 +156,7 @@ impl Block {
     pub fn new() -> Self {
         Self {
             uncompressed: Vec::with_capacity(MAX_BLOCK_SIZE),
-            uncompressed_size: 0,
             compressed: Vec::with_capacity(MAX_COMPRESSED_SIZE + FOOTER_SIZE),
-            crc_hash: 0,
             buffer: Vec::new(),
             offset: None,
         }
@@ -167,9 +165,7 @@ impl Block {
     /// Resets a block.
     pub fn reset(&mut self) {
         self.uncompressed.clear();
-        self.uncompressed_size = 0;
         self.compressed.clear();
-        self.crc_hash = 0;
         self.offset = None;
     }
 
@@ -177,7 +173,6 @@ impl Block {
     /// uncompressed contents.
     pub fn reset_compression(&mut self) {
         self.compressed.clear();
-        self.crc_hash = 0;
     }
 
     /// Extends uncompressed contents and returns the number of consumed bytes. The only case when
@@ -189,25 +184,30 @@ impl Block {
     /// This function panics, if the block contains compressed data. Consider using
     /// [reset_compression](#method.reset_compression).
     pub fn extend_contents(&mut self, buf: &[u8]) -> usize {
-        assert!(self.compressed.len() == 0, "Cannot update contents, as the block was compressed. \\
+        assert!(self.compressed.len() == 0, "Cannot update contents, as the block was compressed. \
             Consider using reset_compression()");
         let consume_bytes = min(buf.len(), MAX_BLOCK_SIZE - self.uncompressed.len());
         self.uncompressed.extend(&buf[..consume_bytes]);
-        self.uncompressed_size += consume_bytes as u32;
         consume_bytes
     }
 
     /// Returns the size of the uncompressed data
     /// (this works even if the block was never decompressed).
     pub fn uncompressed_size(&self) -> u32 {
-        self.uncompressed_size
+        if !self.uncompressed.is_empty() {
+            self.uncompressed.len() as u32
+        } else if !self.compressed.is_empty() {
+            (&self.compressed[self.compressed.len() - 4..]).read_u32::<LittleEndian>().unwrap()
+        } else {
+            0
+        }
     }
 
     /// Returns the size of the compressed data. If the block was not compressed, the function
     /// returns zero. Note, that compressed data does not include
     /// header and footer of the bgzip block.
     pub fn compressed_size(&self) -> u32 {
-        self.compressed.len() as u32
+        self.compressed.len().saturating_sub(FOOTER_SIZE) as u32
     }
 
     /// Returns the size of the block (compressed data and header and footer of the bgzip block).
@@ -216,7 +216,7 @@ impl Block {
         if self.compressed.is_empty() {
             None
         } else {
-            Some((self.compressed.len() + WRAPPER_SIZE) as u32)
+            Some((self.compressed.len() + HEADER_SIZE + MIN_EXTRA_SIZE) as u32)
         }
     }
 
@@ -247,35 +247,29 @@ impl Block {
         unsafe {
             self.compressed.set_len(MAX_COMPRESSED_SIZE);
         }
+        let mut encoder = DeflateEncoder::new(&mut self.compressed[..], compression);
+        encoder.write_all(&self.uncompressed)?;
+        encoder.finish()?;
+
         let mut crc_hasher = crc32fast::Hasher::new();
-        let compressed_size = {
-            let mut encoder = DeflateEncoder::new(&mut self.compressed[..], compression);
-            encoder.write_all(&self.uncompressed)?;
-            crc_hasher.update(&self.uncompressed);
-            let remaining_buf = encoder.finish()?;
-            MAX_COMPRESSED_SIZE - remaining_buf.len()
-        };
-        self.compressed.truncate(compressed_size);
-        self.crc_hash = crc_hasher.finalize();
+        crc_hasher.update(&self.uncompressed);
+        self.compressed.write_u32::<LittleEndian>(crc_hasher.finalize()).unwrap();
+        self.compressed.write_u32::<LittleEndian>(self.uncompressed.len() as u32).unwrap();
         Ok(())
     }
 
     /// Writes the block to `stream`. The function panics if the block was not compressed.
     pub fn dump<W: Write>(&self, stream: &mut W) -> io::Result<()> {
         assert!(self.compressed.len() == 0, "Cannot write an uncompressed block");
-        const BLOCK_HEADER: &[u8; 16] = &[
-             31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
-              0,   0,   0,   0,  // Modification time
-              0, 255,   6,   0,  // Extra flags, OS (255 = unknown), extra length (2 bytes)
-             66,  67,   2,   0]; // SI1, SI2, subfield len (2 bytes)
-        stream.write_all(BLOCK_HEADER)?;
-        stream.write_u16::<LittleEndian>((self.compressed.len() + 25) as u16)?;
-        stream.write_all(&self.compressed)?;
-        stream.write_u32::<LittleEndian>(self.crc_hash)?;
-        assert!(self.uncompressed.len() == 0
-            || self.uncompressed.len() as u32 == self.uncompressed_size);
-        stream.write_u32::<LittleEndian>(self.uncompressed_size)?;
-        Ok(())
+        let block_size = self.block_size().expect("Block size should be defined already") - 1;
+        let block_header: &[u8; 18] = &[
+            31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
+             0,   0,   0,   0,  // Modification time
+             0, 255,   6,   0,  // Extra flags, OS (255 = unknown), extra length (2 bytes)
+            66,  67,   2,   0, // SI1, SI2, subfield len (2 bytes)
+            block_size as u8, (block_size >> 8) as u8];
+        stream.write_all(block_header)?;
+        stream.write_all(&self.compressed)
     }
 
     /// Reads the compressed contents from `stream`. Panics if the block is non-empty
@@ -310,21 +304,11 @@ impl Block {
                 format!("Block size {} > {}", block_size, MAX_BLOCK_SIZE)));
         }
 
-        let compressed_size = block_size - WRAPPER_SIZE;
         unsafe {
             // Include footer in self.compressed to read footer in one go.
-            self.compressed.set_len(compressed_size + FOOTER_SIZE);
+            self.compressed.set_len(block_size - HEADER_SIZE - MIN_EXTRA_SIZE);
         }
         stream.read_exact(&mut self.compressed)?;
-        self.crc_hash = (&self.compressed[compressed_size..compressed_size + 4])
-            .read_u32::<LittleEndian>().unwrap();
-        self.uncompressed_size = (&self.compressed[compressed_size + 4..compressed_size + 8])
-            .read_u32::<LittleEndian>().unwrap();
-        if self.uncompressed_size as usize > MAX_BLOCK_SIZE {
-            return Err(BlockError::Corrupted(
-                format!("Expected uncompressed size {} > {}", block_size, MAX_BLOCK_SIZE)));
-        }
-        self.compressed.truncate(compressed_size);
         Ok(())
     }
 
@@ -334,28 +318,45 @@ impl Block {
         assert!(self.compressed.len() > 0, "Cannot decompress an empty block");
         assert!(self.uncompressed.len() == 0, "Cannot decompress an already decompressed block");
 
+        let compressed_size = self.compressed.len();
+        let exp_uncompressed_size = (&self.compressed[compressed_size - 4..])
+            .read_u32::<LittleEndian>().unwrap() as usize;
         unsafe {
-            self.uncompressed.set_len(self.uncompressed_size as usize);
+            self.uncompressed.set_len(exp_uncompressed_size);
         }
         {
             let mut decoder = DeflateDecoder::new(&mut self.uncompressed[..]);
-            decoder.write_all(&self.compressed).map_err(|e| BlockError::Corrupted(
-                format!("Could not decompress block contents: {:?}", e)))?;
-            let remaining_contents = decoder.finish().map_err(|e| BlockError::Corrupted(
-                format!("Could not decompress block contents: {:?}", e)))?.len();
+            match decoder.write_all(&self.compressed[..compressed_size - FOOTER_SIZE]) {
+                Ok(()) => {},
+                Err(ref e) if e.kind() == ErrorKind::WriteZero => return Err(BlockError::Corrupted(
+                    format!("Could not decompress block contents: \
+                    uncompressed size is bigger than expected {}", exp_uncompressed_size))),
+                Err(e) => return Err(BlockError::Corrupted(
+                    format!("Could not decompress block contents: {:?}", e))),
+            }
+            let remaining_contents = match decoder.finish() {
+                Ok(remaining_buf) => remaining_buf.len(),
+                Err(ref e) if e.kind() == ErrorKind::WriteZero => return Err(BlockError::Corrupted(
+                    format!("Could not decompress block contents: \
+                    uncompressed size is bigger than expected {}", exp_uncompressed_size))),
+                Err(e) => return Err(BlockError::Corrupted(
+                    format!("Could not decompress block contents: {:?}", e))),
+            };
             if remaining_contents != 0 {
                 return Err(BlockError::Corrupted(
                     format!("Uncompressed sizes do not match: expected {}, observed {}",
-                    self.uncompressed_size, self.uncompressed_size as usize - remaining_contents)));
+                    exp_uncompressed_size, exp_uncompressed_size - remaining_contents)));
             }
         }
 
+        let exp_crc32 = (&self.compressed[compressed_size - 8..compressed_size - 4])
+            .read_u32::<LittleEndian>().unwrap();
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&self.uncompressed);
         let obs_crc32 = hasher.finalize();
-        if obs_crc32 != self.crc_hash {
+        if obs_crc32 != exp_crc32 {
             return Err(BlockError::Corrupted(
-                format!("CRC do not match: expected {}, observed {}", self.crc_hash, obs_crc32)));
+                format!("CRC do not match: expected {}, observed {}", exp_crc32, obs_crc32)));
         }
         Ok(())
     }
@@ -367,11 +368,26 @@ impl Block {
 
     /// Access compressed data (without header and footer).
     pub fn compressed_data(&self) -> &[u8] {
-        &self.compressed
+        &self.compressed[..self.compressed.len() - FOOTER_SIZE]
+    }
+
+    /// The function trims the contents of `self`, and returns the second half in a new `Block`.
+    /// The function panics if the initial block was compressed
+    /// or its uncompressed size is less than 2 bytes.
+    pub fn split_into_two(&mut self) -> Block {
+        assert!(self.uncompressed.len() > 1, "Cannot split a block with size < 2 bytes");
+        assert!(self.compressed.len() == 0, "Cannot split an already compressed block");
+        
+        let first_half_size = self.uncompressed.len() / 2;
+        let mut second_half = Block::new();
+        assert!(second_half.extend_contents(&self.uncompressed[first_half_size..])
+            == self.uncompressed.len() - first_half_size);
+        self.uncompressed.truncate(first_half_size);
+        second_half
     }
 }
 
-pub(crate) struct ObjectPool<T> {
+struct ObjectPool<T> {
     objects: Vec<T>,
     constructor: Box<dyn Fn() -> T>,
     taken: u64,
@@ -401,3 +417,6 @@ impl<T> ObjectPool<T> {
         self.objects.push(object);
     }
 }
+
+const SLEEP_TIME: Duration = Duration::from_nanos(50);
+const TIMEOUT: Duration = Duration::from_secs(10);

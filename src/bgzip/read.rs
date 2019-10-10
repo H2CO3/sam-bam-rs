@@ -18,6 +18,10 @@ use std::cmp::{min, max};
 
 use crate::index::{Chunk, VirtualOffset};
 use super::{Block, BlockError, ObjectPool};
+use super::{SLEEP_TIME, TIMEOUT};
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+struct WorkerId(u16);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TaskStatus {
@@ -46,11 +50,6 @@ struct WorkingQueue {
     blocks: VecDeque<Block>,
     tasks: VecDeque<Task>,
 }
-
-const SLEEP_TIME: Duration = Duration::from_nanos(50);
-
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-struct WorkerId(u16);
 
 struct Worker {
     worker_id: WorkerId,
@@ -177,15 +176,14 @@ impl<R: Read + Seek> JumpingReadBlock<R> {
             return Some(self.chunks[0].start().block_offset());
         }
 
-        if VirtualOffset::new(self.offset, 0) >= self.chunks[self.index].end() {
+        let curr_offset = VirtualOffset::new(self.offset, 0);
+        while self.index < self.chunks.len() && curr_offset >= self.chunks[self.index].end() {
             self.index += 1;
-            if self.index >= self.chunks.len() {
-                None
-            } else {
-                Some(max(self.offset, self.chunks[self.index].start().block_offset()))
-            }
+        }
+        if self.index >= self.chunks.len() {
+            None
         } else {
-            Some(self.offset)
+            Some(max(self.offset, self.chunks[self.index].start().block_offset()))
         }
     }
 
@@ -277,7 +275,7 @@ impl MultiThread {
                 is_finished: Arc::clone(&is_finished),
             };
             thread::Builder::new()
-                .name(format!("worker{}", i))
+                .name(format!("bgzip_read{}", i + 1))
                 .spawn(move || worker.run())
                 .expect("Cannot create a thread")
         }).collect();
@@ -332,9 +330,7 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
             }
         }
 
-        let mut time_waited = Duration::from_secs(0);
-        let timeout = Duration::from_secs(10);
-
+        let mut time_waited = Duration::new(0, 0);
         let (block, result) = loop {
             if let Ok(mut guard) = self.working_queue.lock() {
                 let need_pop = match guard.tasks.get(0) {
@@ -364,9 +360,9 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
 
             thread::sleep(SLEEP_TIME);
             time_waited += SLEEP_TIME;
-            if time_waited > timeout {
+            if time_waited > TIMEOUT {
                 return Err(BlockError::IoError(io::Error::new(ErrorKind::TimedOut,
-                    "Decompression takes more than 10 seconds")));
+                    format!("Decompression takes more than {:?}", TIMEOUT))));
             }
         };
 
