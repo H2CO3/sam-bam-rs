@@ -1,4 +1,4 @@
-*bam* is a crate that allows to read BAM files, written completely in Rust.
+*bam* is a crate that allows to read and write BAM and BGZIP files, written completely in Rust.
 
 ## Why?
 
@@ -16,6 +16,8 @@ random genomic regions.
 * `bam::SamReader` - reads a SAM file consecutively.
 * `bam::BamWriter` - writes a BAM file.
 * `bam::SamWriter` - writes a SAM file.
+
+BAM readers and writers have single-thread and multi-thread modes.
 
 You can use `bgzip` module to interact directly with bgzip files (BGZF).
 
