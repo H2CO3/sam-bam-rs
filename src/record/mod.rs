@@ -311,7 +311,8 @@ impl<'a> NextToErr<'a> for std::str::Split<'a, char> {
 
 /// BAM Record.
 ///
-/// Allows to get and set name, [sequence](struct.Sequence.html), [qualities](struct.Qualities.html),
+/// Allows to get and set name, [sequence](sequence/struct.Sequence.html),
+/// [qualities](sequence/struct.Qualities.html),
 /// [CIGAR](cigar/struct.Cigar.html), [flag](struct.Flag.html), [tags](tags/struct.TagViewer.html)
 /// and all other BAM/SAM record fields.
 ///

@@ -133,6 +133,29 @@ impl Sequence {
         b"NACNGNNNTNNNNNNN"[nt as usize]
     }
 
+    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
+    pub fn compl_at(&self, index: usize) -> u8 {
+        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
+        let nt = if index % 2 == 0 {
+            self.raw[index / 2] >> 4
+        } else {
+            self.raw[index / 2] & 0x0f
+        };
+        b"=TGKCYSBAWRDMHVN"[nt as usize]
+    }
+
+    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
+    /// If the nucleotide is not A, C, G or T, the function returns N.
+    pub fn compl_at_acgtn_only(&self, index: usize) -> u8 {
+        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
+        let nt = if index % 2 == 0 {
+            self.raw[index / 2] >> 4
+        } else {
+            self.raw[index / 2] & 0x0f
+        };
+        b"NTGNCNNNANNNNNNN"[nt as usize]
+    }
+
     /// Returns an iterator over a subsequence.
     pub fn subseq<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
         use std::ops::Bound::*;
@@ -206,29 +229,6 @@ impl Sequence {
         assert!(start <= end);
         assert!(end <= self.len);
         (start..end).rev().map(move |i| self.compl_at_acgtn_only(i))
-    }
-
-    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
-    pub fn compl_at(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"=TGKCYSBAWRDMHVN"[nt as usize]
-    }
-
-    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
-    /// If the nucleotide is not A, C, G or T, the function returns N.
-    pub fn compl_at_acgtn_only(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"NTGNCNNNANNNNNNN"[nt as usize]
     }
 
     /// Writes in human readable format. Writes `*` if empty.
