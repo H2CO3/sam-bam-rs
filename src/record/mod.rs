@@ -16,73 +16,7 @@ use super::index;
 
 pub use cigar::Cigar;
 pub use sequence::Sequence;
-
-/// Wrapper around qualities.
-pub struct Qualities {
-    raw: Vec<u8>
-}
-
-impl Qualities {
-    fn new() -> Self {
-        Qualities {
-            raw: Vec::new()
-        }
-    }
-
-    fn fill_from<R: Read>(&mut self, stream: &mut R, len: usize) -> io::Result<()> {
-        unsafe {
-            resize(&mut self.raw, len);
-        }
-        stream.read_exact(&mut self.raw)?;
-        Ok(())
-    }
-
-    /// Returns raw qualities, they contain values 0-93, without +33 added.
-    ///
-    /// If qualities are empty, they have the same length as `Sequence`, but are filled with `0xff`.
-    pub fn raw(&self) -> &[u8] {
-        &self.raw
-    }
-
-    /// Returns 0 if qualities are not available.
-    pub fn len(&self) -> usize {
-        if self.unavailable() {
-            0
-        } else {
-            self.raw.len()
-        }
-    }
-
-    /// Returns `true` if raw qualities have length 0 or are filled with `0xff`.
-    /// Only the first element is checked, O(1).
-    pub fn unavailable(&self) -> bool {
-        self.raw.len() == 0 || self.raw[0] == 0xff
-    }
-
-    /// Returns vector with +33 added, O(n).
-    pub fn to_readable(&self) -> Vec<u8> {
-        self.raw.iter().map(|qual| qual + 33).collect()
-    }
-
-    /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
-    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.unavailable() {
-            return f.write_u8(b'*');
-        }
-        write_iterator(f, self.raw.iter().map(|qual| qual + 33))
-    }
-
-    /// Clears the contents but does not touch capacity.
-    pub fn clear(&mut self) {
-        self.raw.clear();
-    }
-
-    /// Fills the qualities from raw qualities (without + 33).
-    fn fill_from_raw<I: IntoIterator<Item = u8>>(&mut self, qualities: I) {
-        self.raw.clear();
-        self.raw.extend(qualities);
-    }
-}
+pub use sequence::Qualities;
 
 /// `= 0x1`. Record has a mate.
 pub const RECORD_PAIRED: u16 = 0x1;
@@ -622,7 +556,7 @@ impl Record {
         self.name.shrink_to_fit();
         self.cigar.shrink_to_fit();
         self.seq.shrink_to_fit();
-        self.qual.raw.shrink_to_fit();
+        self.qual.shrink_to_fit();
         self.tags.shrink_to_fit();
     }
 
@@ -809,7 +743,7 @@ impl Record {
             stream.write_u32::<LittleEndian>(ref_len << 4 | 3)?;
         }
         stream.write_all(&self.seq.raw())?;
-        stream.write_all(&self.qual.raw)?;
+        stream.write_all(&self.qual.raw())?;
         stream.write_all(self.tags.raw())?;
 
         if self.cigar.len() > 0xffff {
@@ -922,7 +856,8 @@ impl Record {
             self.qual.clear();
             return Err(e);
         }
-        self.qual.fill_from_raw(std::iter::repeat(0xff_u8).take(self.seq.len()));
+        self.qual.clear();
+        self.qual.extend_from_raw(std::iter::repeat(0xff_u8).take(self.seq.len()));
         Ok(())
     }
 
@@ -944,7 +879,8 @@ impl Record {
             self.qual.clear();
             return Err(e);
         }
-        self.qual.fill_from_raw(qualities);
+        self.qual.clear();
+        self.qual.extend_from_raw(qualities);
         if self.seq.len() != self.qual.len() {
             let err = Err(format!("Trying to set sequence and qualities of different lengths: \
                 {} and {}", self.seq.len(), self.qual.len()));
@@ -975,7 +911,8 @@ impl Record {
     pub fn set_raw_seq_qual<U>(&mut self, raw_seq: &[u8], qualities: U) -> Result<(), String>
     where U: IntoIterator<Item = u8>,
     {
-        self.qual.fill_from_raw(qualities);
+        self.qual.clear();
+        self.qual.extend_from_raw(qualities);
         let len = self.qual.len();
         if len + 1 / 2 == raw_seq.len() {
             self.seq.clear();

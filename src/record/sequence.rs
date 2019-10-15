@@ -1,3 +1,5 @@
+//! A wrappers around raw sequence and raw qualities.
+
 use std::io::{self, Read, Write};
 use std::ops::RangeBounds;
 
@@ -235,5 +237,78 @@ impl Sequence {
             return f.write_u8(b'*');
         }
         write_iterator(f, (0..self.len).map(|i| self.at(i)))
+    }
+}
+
+/// Wrapper around qualities.
+pub struct Qualities {
+    raw: Vec<u8>
+}
+
+impl Qualities {
+    /// Creates a new instance of `Qualities`.
+    pub fn new() -> Self {
+        Qualities {
+            raw: Vec::new()
+        }
+    }
+
+    /// Clears qualities and fills from a raw stream.
+    pub fn fill_from<R: Read>(&mut self, stream: &mut R, len: usize) -> io::Result<()> {
+        unsafe {
+            resize(&mut self.raw, len);
+        }
+        stream.read_exact(&mut self.raw)?;
+        Ok(())
+    }
+
+    /// Returns raw qualities, they contain values 0-93, without +33 added.
+    ///
+    /// If qualities are empty, they have the same length as `Sequence`, but are filled with `0xff`.
+    pub fn raw(&self) -> &[u8] {
+        &self.raw
+    }
+
+    /// Returns 0 if qualities are not available.
+    pub fn len(&self) -> usize {
+        if self.unavailable() {
+            0
+        } else {
+            self.raw.len()
+        }
+    }
+
+    /// Returns `true` if raw qualities have length 0 or are filled with `0xff`.
+    /// Only the first element is checked, O(1).
+    pub fn unavailable(&self) -> bool {
+        self.raw.len() == 0 || self.raw[0] == 0xff
+    }
+
+    /// Returns vector with +33 added, O(n).
+    pub fn to_readable(&self) -> Vec<u8> {
+        self.raw.iter().map(|qual| qual + 33).collect()
+    }
+
+    /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
+    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
+        if self.unavailable() {
+            return f.write_u8(b'*');
+        }
+        write_iterator(f, self.raw.iter().map(|qual| qual + 33))
+    }
+
+    /// Clears the contents but does not touch capacity.
+    pub fn clear(&mut self) {
+        self.raw.clear();
+    }
+
+    /// Extends the qualities from raw qualities (without + 33).
+    pub fn extend_from_raw<I: IntoIterator<Item = u8>>(&mut self, qualities: I) {
+        self.raw.extend(qualities);
+    }
+
+    /// Shrinks inner vector.
+    pub fn shrink_to_fit(&mut self) {
+        self.raw.shrink_to_fit();
     }
 }
