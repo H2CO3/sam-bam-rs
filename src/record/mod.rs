@@ -4,240 +4,18 @@ use std::io::{self, Read, ErrorKind, Write};
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
 use std::fmt::{self, Display, Debug, Formatter};
 use std::cell::Cell;
-use std::ops::RangeBounds;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 pub mod tags;
 pub mod cigar;
+pub mod sequence;
 
-use cigar::Cigar;
 use super::header::Header;
 use super::index;
 
-/// Converts nucleotide to BAM u4 (for example `b'T'` -> `8`).
-fn nt_to_raw(nt: u8) -> Result<u8, String> {
-    match nt {
-        b'=' => Ok(0),
-        b'A' => Ok(1),
-        b'C' => Ok(2),
-        b'M' => Ok(3),
-        b'G' => Ok(4),
-        b'R' => Ok(5),
-        b'S' => Ok(6),
-        b'V' => Ok(7),
-        b'T' => Ok(8),
-        b'W' => Ok(9),
-        b'Y' => Ok(10),
-        b'H' => Ok(11),
-        b'K' => Ok(12),
-        b'D' => Ok(13),
-        b'B' => Ok(14),
-        b'N' => Ok(15),
-        _ => Err(format!("Nucleotide not expected: {}", nt as char)),
-    }
-}
-
-/// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
-/// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
-pub struct Sequence {
-    raw: Vec<u8>,
-    len: usize,
-}
-
-impl Sequence {
-    fn new() -> Self {
-        Sequence {
-            raw: Vec::new(),
-            len: 0,
-        }
-    }
-
-    fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I) -> Result<(), String> {
-        self.raw.clear();
-        self.len = 0;
-        for nt in nucleotides.into_iter() {
-            if self.len % 2 == 0 {
-                self.raw.push(nt_to_raw(nt)? << 4);
-            } else {
-                self.raw[self.len / 2] |= nt_to_raw(nt)?;
-            }
-            self.len += 1;
-        };
-        Ok(())
-    }
-
-    fn fill_from<R: Read>(&mut self, stream: &mut R, expanded_len: usize) -> io::Result<()> {
-        let short_len = (expanded_len + 1) / 2;
-        unsafe {
-            resize(&mut self.raw, short_len);
-        }
-        stream.read_exact(&mut self.raw)?;
-        self.len = expanded_len;
-        Ok(())
-    }
-
-    /// Returns raw data.
-    pub fn raw(&self) -> &[u8] {
-        &self.raw
-    }
-
-    /// Returns full length of the sequence, O(1).
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns `true`, if the sequence is not present.
-    pub fn unavailable(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Returns transformed data, each byte represents a single nucleotde, O(n).
-    pub fn to_vec(&self) -> Vec<u8> {
-        (0..self.len).map(|i| self.at(i)).collect()
-    }
-
-    /// Returns transformed data using only nucleotides A, C, G, T and N,
-    /// all other values are transformed into N, each byte represents a single nucleotde, O(n).
-    pub fn to_vec_acgtn_only(&self) -> Vec<u8> {
-        (0..self.len).map(|i| self.at_acgtn_only(i)).collect()
-    }
-
-    /// Returns a nucleotide at the position `index`, represented by a single byte, O(1).
-    pub fn at(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"=ACMGRSVTWYHKDBN"[nt as usize]
-    }
-
-    /// Returns a nucleotide at the position `index`, represented by a single byte, O(1).
-    /// If the nucleotide is not A, C, G or T, the function returns N.
-    pub fn at_acgtn_only(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"NACNGNNNTNNNNNNN"[nt as usize]
-    }
-
-    /// Returns an iterator over a subsequence.
-    pub fn subseq<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
-        use std::ops::Bound::*;
-        let start = match range.start_bound() {
-            Included(&n) => n,
-            Excluded(&n) => n + 1,
-            Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Included(&n) => n + 1,
-            Excluded(&n) => n,
-            Unbounded => self.len,
-        };
-        assert!(start <= end);
-        assert!(end <= self.len);
-        (start..end).map(move |i| self.at(i))
-    }
-
-    /// Returns an iterator over a subsequence using only nucleotides A, C, G, T and N.
-    pub fn subseq_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
-            -> impl Iterator<Item = u8> + '_ {
-        use std::ops::Bound::*;
-        let start = match range.start_bound() {
-            Included(&n) => n,
-            Excluded(&n) => n + 1,
-            Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Included(&n) => n + 1,
-            Excluded(&n) => n,
-            Unbounded => self.len,
-        };
-        assert!(start <= end);
-        assert!(end <= self.len);
-        (start..end).map(move |i| self.at_acgtn_only(i))
-    }
-
-    /// Returns an iterator over a reverse complement of a subsequence.
-    pub fn rev_compl<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
-        use std::ops::Bound::*;
-        let start = match range.start_bound() {
-            Included(&n) => n,
-            Excluded(&n) => n + 1,
-            Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Included(&n) => n + 1,
-            Excluded(&n) => n,
-            Unbounded => self.len,
-        };
-        assert!(start <= end);
-        assert!(end <= self.len);
-        (start..end).rev().map(move |i| self.compl_at(i))
-    }
-
-    /// Returns an iterator over a reverse complement of a subsequence using only
-    /// nucleotides A, C, G, T and N.
-    pub fn rev_compl_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
-            -> impl Iterator<Item = u8> + '_ {
-        use std::ops::Bound::*;
-        let start = match range.start_bound() {
-            Included(&n) => n,
-            Excluded(&n) => n + 1,
-            Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Included(&n) => n + 1,
-            Excluded(&n) => n,
-            Unbounded => self.len,
-        };
-        assert!(start <= end);
-        assert!(end <= self.len);
-        (start..end).rev().map(move |i| self.compl_at_acgtn_only(i))
-    }
-
-    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
-    pub fn compl_at(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"=TGKCYSBAWRDMHVN"[nt as usize]
-    }
-
-    /// Returns a nucleotide, complement to the nucleotide at the position `index`, O(1).
-    /// If the nucleotide is not A, C, G or T, the function returns N.
-    pub fn compl_at_acgtn_only(&self, index: usize) -> u8 {
-        assert!(index < self.len, "Index out of range ({} >= {})", index, self.len);
-        let nt = if index % 2 == 0 {
-            self.raw[index / 2] >> 4
-        } else {
-            self.raw[index / 2] & 0x0f
-        };
-        b"NTGNCNNNANNNNNNN"[nt as usize]
-    }
-
-    /// Writes in human readable format. Writes `*` if empty.
-    pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.len == 0 {
-            return f.write_u8(b'*');
-        }
-        write_iterator(f, (0..self.len).map(|i| self.at(i)))
-    }
-
-    /// Clears the contents but does not touch capacity.
-    pub fn clear(&mut self) {
-        self.raw.clear();
-        self.len = 0;
-    }
-}
+pub use cigar::Cigar;
+pub use sequence::Sequence;
 
 /// Wrapper around qualities.
 pub struct Qualities {
@@ -809,7 +587,7 @@ impl Record {
     /// Replace Cigar by CG tag if Cigar has placeholder *kSmN*.
     fn replace_cigar_if_needed(&mut self) -> Result<(), Error> {
         if self.cigar.len() > 0 && self.cigar.at(0) ==
-                (self.seq.len as u32, cigar::Operation::Soft) {
+                (self.seq.len() as u32, cigar::Operation::Soft) {
             if self.cigar.len() != 2 {
                 return Err(self.corrupt("Record contains invalid Cigar".to_string()));
             }
@@ -829,7 +607,8 @@ impl Record {
                 _ => return Err(
                     self.corrupt("Record should contain tag CG, but does not".to_string())),
             };
-            self.cigar.fill_from_raw(cigar_arr.iter().map(|el| el as u32));
+            self.cigar.clear();
+            self.cigar.extend_from_raw(cigar_arr.iter().map(|el| el as u32));
             std::mem::drop(cigar_arr);
             self.tags.remove(b"CG");
         }
@@ -842,7 +621,7 @@ impl Record {
     pub fn shrink_to_fit(&mut self) {
         self.name.shrink_to_fit();
         self.cigar.shrink_to_fit();
-        self.seq.raw.shrink_to_fit();
+        self.seq.shrink_to_fit();
         self.qual.raw.shrink_to_fit();
         self.tags.shrink_to_fit();
     }
@@ -991,7 +770,7 @@ impl Record {
         } else {
             16 + 4 * self.cigar.len()
         };
-        let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len + self.seq.raw.len()
+        let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len + self.seq.raw().len()
             + self.qual.len() + self.tags.raw().len();
         stream.write_i32::<LittleEndian>(total_block_len as i32)?;
 
@@ -1029,7 +808,7 @@ impl Record {
             let ref_len = (self.calculate_end() - self.start) as u32;
             stream.write_u32::<LittleEndian>(ref_len << 4 | 3)?;
         }
-        stream.write_all(&self.seq.raw)?;
+        stream.write_all(&self.seq.raw())?;
         stream.write_all(&self.qual.raw)?;
         stream.write_all(self.tags.raw())?;
 
@@ -1137,7 +916,8 @@ impl Record {
     /// The function returns an error if there was an unexpected nucleotide.
     /// In that case the sequence and qualities are cleared.
     pub fn set_seq<T: IntoIterator<Item = u8>>(&mut self, sequence: T) -> Result<(), String> {
-        if let Err(e) = self.seq.fill_from_text(sequence) {
+        self.seq.clear();
+        if let Err(e) = self.seq.extend_from_text(sequence) {
             self.seq.clear();
             self.qual.clear();
             return Err(e);
@@ -1158,7 +938,8 @@ impl Record {
     where T: IntoIterator<Item = u8>,
           U: IntoIterator<Item = u8>,
     {
-        if let Err(e) = self.seq.fill_from_text(sequence) {
+        self.seq.clear();
+        if let Err(e) = self.seq.extend_from_text(sequence) {
             self.seq.clear();
             self.qual.clear();
             return Err(e);
@@ -1176,16 +957,14 @@ impl Record {
     }
 
     /// Sets raw sequence (4 bits for a nucleotide) for a record and removes record qualities.
+    /// Argument `len` represents the number of nucleotides, not the number of bytes.
     ///
     /// The function panics if the length does not match sequence length.
     pub fn set_raw_seq(&mut self, raw_seq: &[u8], len: usize) {
         assert!(len + 1 / 2 == raw_seq.len(), "Sequence length can be {} or {}, but not {}",
             raw_seq.len() * 2 - 1, raw_seq.len() * 2, len);
-        unsafe {
-            resize(&mut self.seq.raw, raw_seq.len());
-        }
-        self.seq.raw.copy_from_slice(raw_seq);
-        self.seq.len = len;
+        let mut slice = &raw_seq[..];
+        self.seq.fill_from(&mut slice, len).unwrap();
     }
 
     /// Sets raw sequence (4 bits for a nucleotide) for a record and record qualities.
@@ -1204,11 +983,8 @@ impl Record {
             return Err(format!("Sequence length can be {} or {}, but not {}",
                 raw_seq.len() * 2 - 1, raw_seq.len() * 2, len));
         }
-        unsafe {
-            resize(&mut self.seq.raw, raw_seq.len());
-        }
-        self.seq.raw.copy_from_slice(raw_seq);
-        self.seq.len = len;
+        let mut slice = &raw_seq[..];
+        self.seq.fill_from(&mut slice, len).unwrap();
         Ok(())
     }
 
@@ -1216,14 +992,16 @@ impl Record {
     pub fn set_cigar<I: IntoIterator<Item = u8>>(&mut self, cigar: I) -> Result<(), String> {
         self.end.set(0);
         self.bin.set(BIN_UNKNOWN);
-        self.cigar.fill_from_text(cigar)
+        self.cigar.clear();
+        self.cigar.extend_from_text(cigar)
     }
 
     /// Sets raw record cigar. This resets end position and BAI bin.
     pub fn set_raw_cigar<I: IntoIterator<Item = u32>>(&mut self, cigar: I) {
         self.end.set(0);
         self.bin.set(BIN_UNKNOWN);
-        self.cigar.fill_from_raw(cigar);
+        self.cigar.clear();
+        self.cigar.extend_from_raw(cigar);
     }
 
     /// Returns an iterator over pairs `(Option<u32>, Option<u32>)`.

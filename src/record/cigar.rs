@@ -130,10 +130,11 @@ impl From<u32> for Operation {
 }
 
 /// A wrapper around raw Cigar.
-pub struct Cigar(pub(crate) Vec<u32>);
+pub struct Cigar(Vec<u32>);
 
 impl Cigar {
-    pub(crate) fn new() -> Self {
+    /// Creates a new empty CIGAR.
+    pub fn new() -> Self {
         Cigar(Vec::new())
     }
 
@@ -142,15 +143,14 @@ impl Cigar {
         self.0.clear();
     }
 
-    /// Fills Cigar from raw data.
-    pub fn fill_from_raw<I: IntoIterator<Item = u32>>(&mut self, iter: I) {
-        self.0.clear();
+    /// Extends Cigar from raw data.
+    pub fn extend_from_raw<I: IntoIterator<Item = u32>>(&mut self, iter: I) {
         self.0.extend(iter);
     }
 
-    /// Fills Cigar from text. If the error occured, the cigar may be filled partly.
-    pub fn fill_from_text<I: IntoIterator<Item = u8>>(&mut self, text: I) -> Result<(), String> {
-        self.0.clear();
+    /// Extends Cigar from text representation.
+    /// If an error occured, the cigar may be filled partially.
+    pub fn extend_from_text<I: IntoIterator<Item = u8>>(&mut self, text: I) -> Result<(), String> {
         let mut op_len = 0_u32;
         for symb in text {
             if symb >= b'0' && symb <= b'9' {
@@ -218,7 +218,7 @@ impl Cigar {
         }).sum::<u32>()
     }
 
-    /// Shrink inner vector
+    /// Shrinks inner vector.
     pub fn shrink_to_fit(&mut self) {
         self.0.shrink_to_fit();
     }
