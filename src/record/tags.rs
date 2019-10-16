@@ -131,8 +131,11 @@ impl<'a> IntArrayView<'a> {
     }
 
     /// Returns iterator over values (converted into `i64`).
-    pub fn iter<'b: 'a>(&'b self) -> impl Iterator<Item = i64> + 'b {
-        self.raw.chunks(self.int_type.size_of()).map(move |chunk| self.int_type.parse_raw(chunk))
+    pub fn iter<'b: 'a>(&'b self) -> IntArrayViewIter<'b> {
+        IntArrayViewIter {
+            chunks: self.raw.chunks(self.int_type.size_of()),
+            int_type: self.int_type,
+        }
     }
 
     /// Returns raw array.
@@ -140,6 +143,34 @@ impl<'a> IntArrayView<'a> {
         self.raw
     }
 }
+
+/// Double-ended iterator over [IntArrayView](struct.IntArrayView.html)
+/// values converted into `i64`.
+pub struct IntArrayViewIter<'a> {
+    chunks: std::slice::Chunks<'a, u8>,
+    int_type: IntegerType,
+}
+
+impl<'a> Iterator for IntArrayViewIter<'a> {
+    type Item = i64;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.chunks.next().map(|chunk| self.int_type.parse_raw(chunk))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for IntArrayViewIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.chunks.next_back().map(|chunk| self.int_type.parse_raw(chunk))
+    }
+}
+
+impl<'a> ExactSizeIterator for IntArrayViewIter<'a> {}
+impl<'a> std::iter::FusedIterator for IntArrayViewIter<'a> {}
 
 /// Wrapper around raw float array stored in a tag.
 pub struct FloatArrayView<'a> {
@@ -159,8 +190,10 @@ impl<'a> FloatArrayView<'a> {
         parse_float(&self.raw[start..end])
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = f32> + 'a {
-        self.raw.chunks(4).map(|chunk| parse_float(chunk))
+    pub fn iter<'b: 'a>(&'b self) -> FloatArrayViewIter<'b> {
+        FloatArrayViewIter {
+            chunks: self.raw.chunks(4),
+        }
     }
 
     /// Returns raw array.
@@ -168,6 +201,33 @@ impl<'a> FloatArrayView<'a> {
         self.raw
     }
 }
+
+/// Double-ended iterator over [FloatArrayView](struct.FloatArrayView.html) values.
+pub struct FloatArrayViewIter<'a> {
+    chunks: std::slice::Chunks<'a, u8>,
+}
+
+impl<'a> Iterator for FloatArrayViewIter<'a> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.chunks.next().map(|chunk| parse_float(chunk))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
+impl<'a> DoubleEndedIterator for FloatArrayViewIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.chunks.next_back().map(|chunk| parse_float(chunk))
+    }
+}
+
+impl<'a> ExactSizeIterator for FloatArrayViewIter<'a> {}
+impl<'a> std::iter::FusedIterator for FloatArrayViewIter<'a> {}
+
 
 /// Enum with all possible tag values.
 ///
@@ -762,4 +822,12 @@ impl<'a> Iterator for TagIter<'a> {
             None => None,
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.lengths.size_hint()
+    }
 }
+
+impl<'a> ExactSizeIterator for TagIter<'a> {}
+
+impl<'a> std::iter::FusedIterator for TagIter<'a> {}

@@ -332,6 +332,7 @@ impl Cigar {
     }
 }
 
+/// Double-ended iterator over CIGAR operations `(usize, Operation)`.
 pub struct CigarIter<'a> {
     parent: &'a Cigar,
     i: usize,
@@ -349,18 +350,27 @@ impl<'a> Iterator for CigarIter<'a> {
             None
         }
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.j - self.i;
+        (len, Some(len))
+    }
 }
 
 impl<'a> DoubleEndedIterator for CigarIter<'a> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.i < self.j {
             self.j -= 1;
-            Some(self.parent.at(self.j + 1))
+            Some(self.parent.at(self.j))
         } else {
             None
         }
     }
 }
+
+impl<'a> ExactSizeIterator for CigarIter<'a> {}
+
+impl<'a> std::iter::FusedIterator for CigarIter<'a> {}
 
 /// Iterator over pairs `(Option<u32>, Option<u32>)`.
 /// The first element represents a sequence index, and the second element represents a

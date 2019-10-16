@@ -1,7 +1,7 @@
 //! A wrappers around raw sequence and raw qualities.
 
 use std::io::{self, Read, Write};
-use std::ops::RangeBounds;
+use std::ops::{Range, RangeBounds};
 
 use byteorder::WriteBytesExt;
 
@@ -158,7 +158,7 @@ impl Sequence {
     }
 
     /// Returns an iterator over a subsequence.
-    pub fn subseq<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
+    pub fn subseq<'a, R: RangeBounds<usize>>(&'a self, range: R) -> SubseqIter<'a> {
         use std::ops::Bound::*;
         let start = match range.start_bound() {
             Included(&n) => n,
@@ -172,12 +172,14 @@ impl Sequence {
         };
         assert!(start <= end);
         assert!(end <= self.len);
-        (start..end).map(move |i| self.at(i))
+        SubseqIter {
+            parent: self,
+            indices: start..end,
+        }
     }
 
     /// Returns an iterator over a subsequence using only nucleotides A, C, G, T and N.
-    pub fn subseq_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
-            -> impl Iterator<Item = u8> + '_ {
+    pub fn subseq_acgtn_only<R: RangeBounds<usize>>(&self, range: R) -> SubseqIterAcgtn {
         use std::ops::Bound::*;
         let start = match range.start_bound() {
             Included(&n) => n,
@@ -191,11 +193,14 @@ impl Sequence {
         };
         assert!(start <= end);
         assert!(end <= self.len);
-        (start..end).map(move |i| self.at_acgtn_only(i))
+        SubseqIterAcgtn {
+            parent: self,
+            indices: start..end,
+        }
     }
 
     /// Returns an iterator over a reverse complement of a subsequence.
-    pub fn rev_compl<R: RangeBounds<usize>>(&self, range: R) -> impl Iterator<Item = u8> + '_ {
+    pub fn rev_compl<R: RangeBounds<usize>>(&self, range: R) -> RevComplIter {
         use std::ops::Bound::*;
         let start = match range.start_bound() {
             Included(&n) => n,
@@ -209,13 +214,15 @@ impl Sequence {
         };
         assert!(start <= end);
         assert!(end <= self.len);
-        (start..end).rev().map(move |i| self.compl_at(i))
+        RevComplIter {
+            parent: self,
+            indices: (start..end).rev(),
+        }
     }
 
     /// Returns an iterator over a reverse complement of a subsequence using only
     /// nucleotides A, C, G, T and N.
-    pub fn rev_compl_acgtn_only<R: RangeBounds<usize>>(&self, range: R)
-            -> impl Iterator<Item = u8> + '_ {
+    pub fn rev_compl_acgtn_only<R: RangeBounds<usize>>(&self, range: R) -> RevComplIterAcgtn {
         use std::ops::Bound::*;
         let start = match range.start_bound() {
             Included(&n) => n,
@@ -229,7 +236,10 @@ impl Sequence {
         };
         assert!(start <= end);
         assert!(end <= self.len);
-        (start..end).rev().map(move |i| self.compl_at_acgtn_only(i))
+        RevComplIterAcgtn {
+            parent: self,
+            indices: (start..end).rev(),
+        }
     }
 
     /// Writes in human readable format. Writes `*` if empty.
@@ -240,6 +250,43 @@ impl Sequence {
         write_iterator(f, (0..self.len).map(|i| self.at(i)))
     }
 }
+
+macro_rules! subseq_iter {
+    ($name:ident, $ind_ty:ty, $fun:ident) => {
+        /// Double-ended iterator over subsequence.
+        pub struct $name<'a> {
+            parent: &'a Sequence,
+            indices: $ind_ty,
+        }
+
+        impl<'a> std::iter::Iterator for $name<'a> {
+            type Item = u8;
+
+            fn next(&mut self) -> Option<u8> {
+                self.indices.next().map(|i| self.parent.$fun(i))
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                self.indices.size_hint()
+            }
+        }
+
+        impl<'a> std::iter::DoubleEndedIterator for $name<'a> {
+            fn next_back(&mut self) -> Option<Self::Item> {
+                self.indices.next_back().map(|i| self.parent.$fun(i))
+            }
+        }
+
+        impl<'a> std::iter::ExactSizeIterator for $name<'a> {}
+
+        impl<'a> std::iter::FusedIterator for $name<'a> {}
+    }
+}
+
+subseq_iter!(SubseqIter, Range<usize>, at);
+subseq_iter!(SubseqIterAcgtn, Range<usize>, at_acgtn_only);
+subseq_iter!(RevComplIter, std::iter::Rev<Range<usize>>, compl_at);
+subseq_iter!(RevComplIterAcgtn, std::iter::Rev<Range<usize>>, compl_at_acgtn_only);
 
 /// Wrapper around qualities.
 #[derive(Clone)]
