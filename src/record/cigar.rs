@@ -6,6 +6,19 @@ use std::slice::Iter;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
+/// Cigar operation class:
+/// * Match: M, = and X,
+/// * Insertion: I and S,
+/// * Deletion: D and N,
+/// * Hard clipping: H and P,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    Match = 0,
+    Insertion = 1,
+    Deletion = 2,
+    Hard = 3,
+}
+
 /// Cigar operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -72,6 +85,18 @@ impl Operation {
         }
     }
 
+    /// Returns [operation class](enum.Class.html): operations combined by their behavior
+    /// (soft and insertion both consume query but not reference, so they represent the same
+    /// class [Insertion](enum.Class.html#variant.Insertion)).
+    pub fn class(self) -> Class {
+        match self {
+            Operation::AlnMatch | Operation::SeqMatch | Operation::SeqMismatch => Class::Match,
+            Operation::Insertion | Operation::Soft => Class::Insertion,
+            Operation::Deletion | Operation::Skip => Class::Deletion,
+            Operation::Hard | Operation::Padding => Class::Hard,
+        }
+    }
+
     /// Returns `true` if the operation consumes both query and reference (M, = or X).
     pub fn is_match(self) -> bool {
         match self {
@@ -130,6 +155,7 @@ impl From<u32> for Operation {
 }
 
 /// A wrapper around raw Cigar.
+#[derive(Clone)]
 pub struct Cigar(Vec<u32>);
 
 impl Cigar {
@@ -138,14 +164,26 @@ impl Cigar {
         Cigar(Vec::new())
     }
 
+    /// Creates a cigar from raw data.
+    pub fn from_raw(raw: &[u32]) -> Self {
+        Cigar(raw.to_vec())
+    }
+
     /// Clears the contents but does not touch capacity.
     pub fn clear(&mut self) {
         self.0.clear();
     }
 
-    /// Extends Cigar from raw data.
+    /// Extends CIGAR from raw data.
     pub fn extend_from_raw<I: IntoIterator<Item = u32>>(&mut self, iter: I) {
         self.0.extend(iter);
+    }
+
+    /// Pushes a single operation to the end of the CIGAR. Does nothing if `len` is 0.
+    pub fn push(&mut self, len: u32, operation: Operation) {
+        if len > 0 {
+            self.0.push(len << 4 | operation as u32)
+        }
     }
 
     /// Extends Cigar from text representation.
@@ -183,8 +221,12 @@ impl Cigar {
     }
 
     /// Returns an iterator over typles `(length, operation)`.
-    pub fn iter(&self) -> impl Iterator<Item = (u32, Operation)> + '_ {
-        (0..self.0.len()).map(move |i| self.at(i))
+    pub fn iter<'a>(&'a self) -> CigarIter<'a> {
+        CigarIter {
+            parent: self,
+            i: 0,
+            j: self.0.len(),
+        }
     }
 
     /// Cigar length.
@@ -235,7 +277,9 @@ impl Cigar {
         Ok(())
     }
 
-    pub(crate) fn aligned_pairs(&self, r_pos: u32) -> AlignedPairs {
+    /// Returns aligned pairs (considering that reference starts at position `r_pos`).
+    #[doc(hidden)]
+    pub fn aligned_pairs(&self, r_pos: u32) -> AlignedPairs {
         AlignedPairs {
             raw_iter: self.0.iter(),
             q_pos: 0,
@@ -245,12 +289,75 @@ impl Cigar {
         }
     }
 
-    pub(crate) fn matching_pairs(&self, r_pos: u32) -> MatchingPairs {
+    /// Returns matching pairs (considering that reference starts at position `r_pos`).
+    #[doc(hidden)]
+    pub fn matching_pairs(&self, r_pos: u32) -> MatchingPairs {
         MatchingPairs {
             raw_iter: self.0.iter(),
             q_pos: 0,
             r_pos,
             remaining_len: 0,
+        }
+    }
+
+    /// Returns the size of the hard clipping
+    /// on the left side if `left_side` and on the right side otherwise.
+    pub fn hard_clipping(&self, left_side: bool) -> u32 {
+        if left_side {
+            self.iter().take_while(|(_len, op)| !op.consumes_ref() && !op.consumes_query())
+                .map(|(len, _op)| len).sum()
+        } else {
+            self.iter().rev().take_while(|(_len, op)| !op.consumes_ref() && !op.consumes_query())
+                .map(|(len, _op)| len).sum()
+        }
+    }
+
+    /// Returns the size of the soft clipping
+    /// on the left side if `left_side` and on the right side otherwise.
+    pub fn soft_clipping(&self, left_side: bool) -> u32 {
+        let iter: Box<dyn Iterator<Item = _>> = if left_side {
+            Box::new(self.iter())
+        } else {
+            Box::new(self.iter().rev())
+        };
+        let mut res = 0;
+        for (len, op) in iter {
+            match op.class() {
+                Class::Hard => {},
+                Class::Insertion => res += len,
+                _ => break,
+            }
+        }
+        res
+    }
+}
+
+pub struct CigarIter<'a> {
+    parent: &'a Cigar,
+    i: usize,
+    j: usize,
+}
+
+impl<'a> Iterator for CigarIter<'a> {
+    type Item = (u32, Operation);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.i < self.j {
+            self.i += 1;
+            Some(self.parent.at(self.i - 1))
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a> DoubleEndedIterator for CigarIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.i < self.j {
+            self.j -= 1;
+            Some(self.parent.at(self.j + 1))
+        } else {
+            None
         }
     }
 }
@@ -259,6 +366,7 @@ impl Cigar {
 /// The first element represents a sequence index, and the second element represents a
 /// reference index. If the current operation is an insertion or a deletion, the respective
 /// element will be `None.`
+#[derive(Clone)]
 pub struct AlignedPairs<'a> {
     raw_iter: Iter<'a, u32>,
     q_pos: u32,
@@ -299,6 +407,7 @@ impl<'a> Iterator for AlignedPairs<'a> {
 /// Iterator over pairs `(u32, u32)`.
 /// The first element represents a sequence index, and the second element represents a
 /// reference index. This iterator skips insertions and deletions.
+#[derive(Clone)]
 pub struct MatchingPairs<'a> {
     raw_iter: Iter<'a, u32>,
     q_pos: u32,

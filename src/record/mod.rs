@@ -318,6 +318,7 @@ impl<'a> NextToErr<'a> for std::str::Split<'a, char> {
 ///
 /// You can use [aligned_pairs](#method.aligned_pairs) and [matching_pairs](#method.matching_pairs)
 /// to iterate over record/reference aligned indices.
+#[derive(Clone)]
 pub struct Record {
     ref_id: i32,
     mate_ref_id: i32,

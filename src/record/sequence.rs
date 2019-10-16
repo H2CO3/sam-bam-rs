@@ -32,6 +32,7 @@ fn nt_to_raw(nt: u8) -> Result<u8, String> {
 
 /// Wrapper around raw sequence, stored as an `[u8; (len + 1) / 2]`. Each four bits encode a
 /// nucleotide in the following order: `=ACMGRSVTWYHKDBN`.
+#[derive(Clone)]
 pub struct Sequence {
     raw: Vec<u8>,
     len: usize,
@@ -241,6 +242,7 @@ impl Sequence {
 }
 
 /// Wrapper around qualities.
+#[derive(Clone)]
 pub struct Qualities {
     raw: Vec<u8>
 }

@@ -448,6 +448,7 @@ write_value_array!(f32, b'f', write_f32);
 /// // Add a new tag with name `BB`, type `i16 array` and value `[3, 4, 5, 6]`.
 /// record.tags_mut().push(b"BB", &[3_i16, 4, 5, 6] as &[i16]);
 /// ```
+#[derive(Clone)]
 pub struct TagViewer {
     raw: Vec<u8>,
     lengths: Vec<u32>,

@@ -142,6 +142,7 @@ pub const MAX_COMPRESSED_SIZE: usize = MAX_BLOCK_SIZE - WRAPPER_SIZE;
 ///
 /// You can extend uncompressed data using [extend_contents](#method.extend_contents), and
 /// and then compress the block using [compress](#method.compress).
+#[derive(Clone)]
 pub struct Block {
     // Uncompressed contents, max size = [MAX_BLOCK_SIZE](constant.MAX_BLOCK_SIZE.html).
     uncompressed: Vec<u8>,

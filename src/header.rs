@@ -451,4 +451,14 @@ impl Header {
     pub fn reference_id(&self, ref_name: &str) -> Option<u32> {
         self.ref_ids.get(ref_name).cloned()
     }
+
+    /// Returns reference names.
+    pub fn reference_names(&self) -> &[String] {
+        &self.ref_names
+    }
+
+    /// Returns reference names.
+    pub fn reference_lengths(&self) -> &[u32] {
+        &self.ref_lengths
+    }
 }

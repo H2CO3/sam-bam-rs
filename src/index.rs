@@ -124,6 +124,7 @@ impl Display for Chunk {
     }
 }
 
+#[derive(Clone)]
 struct Bin {
     bin_id: u32,
     chunks: Vec<Chunk>,
@@ -149,6 +150,7 @@ impl Display for Bin {
     }
 }
 
+#[derive(Clone)]
 struct Reference {
     bins: HashMap<u32, Bin>,
 }
@@ -181,6 +183,7 @@ impl Display for Reference {
 
 /// BAI Index. Allows to get chunks in a bgzip file, that contain records from a specific genomic
 /// region.
+#[derive(Clone)]
 pub struct Index {
     references: Vec<Reference>,
     n_unmapped: Option<u64>,
