@@ -11,21 +11,21 @@ use super::{resize, write_iterator};
 fn nt_to_raw(nt: u8) -> Result<u8, String> {
     match nt {
         b'=' => Ok(0),
-        b'A' => Ok(1),
-        b'C' => Ok(2),
-        b'M' => Ok(3),
-        b'G' => Ok(4),
-        b'R' => Ok(5),
-        b'S' => Ok(6),
-        b'V' => Ok(7),
-        b'T' => Ok(8),
-        b'W' => Ok(9),
-        b'Y' => Ok(10),
-        b'H' => Ok(11),
-        b'K' => Ok(12),
-        b'D' => Ok(13),
-        b'B' => Ok(14),
-        b'N' => Ok(15),
+        b'A' | b'a' => Ok(1),
+        b'C' | b'c' => Ok(2),
+        b'M' | b'm' => Ok(3),
+        b'G' | b'g' => Ok(4),
+        b'R' | b'r' => Ok(5),
+        b'S' | b's' => Ok(6),
+        b'V' | b'v' => Ok(7),
+        b'T' | b't' => Ok(8),
+        b'W' | b'w' => Ok(9),
+        b'Y' | b'y' => Ok(10),
+        b'H' | b'h' => Ok(11),
+        b'K' | b'k' => Ok(12),
+        b'D' | b'd' => Ok(13),
+        b'B' | b'b' => Ok(14),
+        b'N' | b'n' => Ok(15),
         _ => Err(format!("Nucleotide not expected: {}", nt as char)),
     }
 }
@@ -47,6 +47,13 @@ impl Sequence {
         }
     }
 
+    /// Creates a new sequence from text representation.
+    pub fn from_text<I: IntoIterator<Item = u8>>(sequence: I) -> Result<Self, String> {
+        let mut seq = Sequence::new();
+        seq.extend_from_text(sequence)?;
+        Ok(seq)
+    }
+
     /// Clears sequence but does not touch capacity.
     pub fn clear(&mut self) {
         self.raw.clear();
@@ -58,16 +65,22 @@ impl Sequence {
         self.raw.shrink_to_fit();
     }
 
+    /// Pushes a single nucleotide to the end.
+    pub fn push(&mut self, nt: u8) -> Result<(), String> {
+        if self.len % 2 == 0 {
+            self.raw.push(nt_to_raw(nt)? << 4);
+        } else {
+            self.raw[self.len / 2] |= nt_to_raw(nt)?;
+        }
+        self.len += 1;
+        Ok(())
+    }
+
     /// Extends sequence from the text representation.
     pub fn extend_from_text<I: IntoIterator<Item = u8>>(&mut self, nucleotides: I)
             -> Result<(), String> {
         for nt in nucleotides.into_iter() {
-            if self.len % 2 == 0 {
-                self.raw.push(nt_to_raw(nt)? << 4);
-            } else {
-                self.raw[self.len / 2] |= nt_to_raw(nt)?;
-            }
-            self.len += 1;
+            self.push(nt)?;
         };
         Ok(())
     }
@@ -95,9 +108,9 @@ impl Sequence {
         self.len
     }
 
-    /// Returns `true`, if the sequence is not present.
-    pub fn unavailable(&self) -> bool {
-        self.len == 0
+    /// Returns `true`, if the sequence is present.
+    pub fn available(&self) -> bool {
+        self.len > 0
     }
 
     /// Returns transformed data, each byte represents a single nucleotde, O(n).
@@ -302,6 +315,12 @@ impl Qualities {
         }
     }
 
+    pub fn from_raw<I: IntoIterator<Item = u8>>(raw: I) -> Self {
+        let mut qualities = Qualities::new();
+        qualities.extend_from_raw(raw);
+        qualities
+    }
+
     /// Clears qualities and fills from a raw stream.
     pub fn fill_from<R: Read>(&mut self, stream: &mut R, len: usize) -> io::Result<()> {
         unsafe {
@@ -320,17 +339,17 @@ impl Qualities {
 
     /// Returns 0 if qualities are not available.
     pub fn len(&self) -> usize {
-        if self.unavailable() {
-            0
-        } else {
+        if self.available() {
             self.raw.len()
+        } else {
+            0
         }
     }
 
-    /// Returns `true` if raw qualities have length 0 or are filled with `0xff`.
+    /// Returns `false` if raw qualities have length 0 or are filled with `0xff`.
     /// Only the first element is checked, O(1).
-    pub fn unavailable(&self) -> bool {
-        self.raw.len() == 0 || self.raw[0] == 0xff
+    pub fn available(&self) -> bool {
+        self.raw.len() > 0 && self.raw[0] != 0xff
     }
 
     /// Returns vector with +33 added, O(n).
@@ -340,7 +359,7 @@ impl Qualities {
 
     /// Writes to `f` in human readable format (qual + 33). Writes `*` if empty.
     pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.unavailable() {
+        if !self.available() {
             return f.write_u8(b'*');
         }
         write_iterator(f, self.raw.iter().map(|qual| qual + 33))

@@ -408,9 +408,19 @@ impl Record {
                 })
             },
         };
-        self.set_ref_id(stream.read_i32::<LittleEndian>()?)?;
+        
+        let ref_id = stream.read_i32::<LittleEndian>()?;
+        if ref_id < -1 {
+            return Err(self.corrupt("Reference id < 1".to_string()));
+        }
+        self.set_ref_id(ref_id);
+
         self.end.set(0);
-        self.set_start(stream.read_i32::<LittleEndian>()?)?;
+        let start = stream.read_i32::<LittleEndian>()?;
+        if start < -1 {
+            return Err(self.corrupt("Start < 1".to_string()));
+        }
+        self.set_start(start);
         let name_len = stream.read_u8()?;
         if name_len == 0 {
             return Err(self.corrupt("Name length == 0".to_string()));
@@ -425,8 +435,18 @@ impl Record {
             return Err(self.corrupt("Negative sequence length".to_string()));
         }
         let qual_len = qual_len as usize;
-        self.set_mate_ref_id(stream.read_i32::<LittleEndian>()?)?;
-        self.set_mate_start(stream.read_i32::<LittleEndian>()?)?;
+
+        let mate_ref_id = stream.read_i32::<LittleEndian>()?;
+        if mate_ref_id < -1 {
+            return Err(self.corrupt("Mate reference id < 1".to_string()));
+        }
+        self.set_mate_ref_id(mate_ref_id);
+
+        let mate_start = stream.read_i32::<LittleEndian>()?;
+        if mate_start < -1 {
+            return Err(self.corrupt("Mate start < 1".to_string()));
+        }
+        self.set_mate_start(mate_start);
         self.set_template_len(stream.read_i32::<LittleEndian>()?);
 
         unsafe {
@@ -462,17 +482,20 @@ impl Record {
 
         let rname = split.try_next("reference name")?;
         if rname == "*" {
-            self.set_ref_id(-1).unwrap();
+            self.set_ref_id(-1);
         } else {
             let r_id = header.reference_id(rname).ok_or_else(||
                 self.corrupt(format!("Reference '{}' is not in the header", rname)))?;
-            self.set_ref_id(r_id as i32)?;
+            self.set_ref_id(r_id as i32);
         }
 
         let start = split.try_next("start (POS)")?;
         let start = start.parse::<i32>()
             .map_err(|_| self.corrupt(format!("Cannot convert POS '{}' to int", start)))? - 1;
-        self.set_start(start)?;
+        if start < -1 {
+            return Err(self.corrupt("Start < -1".to_string()));
+        }
+        self.set_start(start);
 
         let mapq = split.try_next("mapq")?;
         let mapq = mapq.parse()
@@ -483,19 +506,22 @@ impl Record {
 
         let rnext = split.try_next("mate reference name (RNEXT)")?;
         if rnext == "*" {
-            self.set_mate_ref_id(-1).unwrap();
+            self.set_mate_ref_id(-1);
         } else if rnext == "=" {
-            self.set_mate_ref_id(self.ref_id).unwrap();
+            self.set_mate_ref_id(self.ref_id);
         } else {
             let nr_id = header.reference_id(rnext).ok_or_else(||
                 self.corrupt(format!("Reference '{}' is not in the header", rnext)))?;
-            self.set_mate_ref_id(nr_id as i32)?;
+            self.set_mate_ref_id(nr_id as i32);
         }
 
         let mate_start = split.try_next("mate start (PNEXT)")?;
         let mate_start = mate_start.parse::<i32>().map_err(|_|
             self.corrupt(format!("Cannot convert PNEXT '{}' to int", mate_start)))? - 1;
-        self.set_mate_start(mate_start)?;
+        if mate_start < -1 {
+            return Err(self.corrupt("Mate start < -1".to_string()));
+        }
+        self.set_mate_start(mate_start);
 
         let template_len = split.try_next("template length (TLEN)")?;
         let template_len = template_len.parse::<i32>().map_err(|_|
@@ -505,9 +531,9 @@ impl Record {
         let seq = split.try_next("sequence")?;
         let qual = split.try_next("qualities")?;
         if seq == "*" {
-            self.reset_seq();
+            self.set_seq_qual(std::iter::empty(), std::iter::empty()).map_err(|e| self.corrupt(e))?;
         } else if qual == "*" {
-            self.set_seq(seq.bytes()).map_err(|e| self.corrupt(e))?;
+            self.set_seq_qual(seq.bytes(), std::iter::empty()).map_err(|e| self.corrupt(e))?;
         } else {
             self.set_seq_qual(seq.bytes(), qual.bytes().map(|q| q - 33))
                 .map_err(|e| self.corrupt(e))?;
@@ -567,18 +593,16 @@ impl Record {
         &self.name
     }
 
-    /// Returns record sequence.
+    /// Returns record sequence. You can check if sequence is present in the record using
+    /// [sequence().available()](sequence/struct.Sequence.html#method.available).
     pub fn sequence(&self) -> &Sequence {
         &self.seq
     }
 
-    /// Returns record qualities, if present.
-    pub fn qualities(&self) -> Option<&Qualities> {
-        if self.qual.unavailable() {
-            None
-        } else {
-            Some(&self.qual)
-        }
+    /// Returns record qualities. You can check if qualities are present in the record using
+    /// [qualities().available()](sequence/struct.Qualities.html#method.available).
+    pub fn qualities(&self) -> &Qualities {
+        &self.qual
     }
 
     /// Returns record CIGAR (can be empty).
@@ -785,86 +809,49 @@ impl Record {
         self.flag.0 = flag;
     }
 
-    /// Sets reference id. It cannot be less than -1.
-    pub fn set_ref_id(&mut self, ref_id: i32) -> Result<(), &'static str> {
-        if ref_id < -1 {
-            Err("Reference id < -1")
-        } else {
-            self.ref_id = ref_id;
-            Ok(())
-        }
+    /// Sets reference id. Panics if less than -1. This function does not update record flag.
+    pub fn set_ref_id(&mut self, ref_id: i32) {
+        assert!(ref_id >= -1, "Reference id < -1");
+        self.ref_id = ref_id;
     }
 
-    /// Sets record 0-based start. It cannot be less than -1.
+    /// Sets record 0-based start. Panics if less than -1.
     ///
     /// If the end position was already calculated, it is updated.
-    pub fn set_start(&mut self, start: i32) -> Result<(), &'static str> {
-        if start < -1 {
-            Err("Start < -1")
-        } else {
-            let difference = start - self.start;
-            self.start = start;
-            if self.end.get() != 0 {
-                *self.end.get_mut() += difference;
-            }
-            self.bin.set(BIN_UNKNOWN);
-            Ok(())
+    pub fn set_start(&mut self, start: i32) {
+        assert!(start >= -1, "Start < -1");
+        let difference = start - self.start;
+        self.start = start;
+        if self.end.get() != 0 {
+            *self.end.get_mut() += difference;
         }
+        self.bin.set(BIN_UNKNOWN);
     }
 
     pub fn set_mapq(&mut self, mapq: u8) {
         self.mapq = mapq;
     }
 
-    /// Sets reference id of the mate record. It cannot be less than -1.
-    pub fn set_mate_ref_id(&mut self, mate_ref_id: i32) -> Result<(), &'static str> {
-        if mate_ref_id < -1 {
-            Err("Mate reference id < -1")
-        } else {
-            self.mate_ref_id = mate_ref_id;
-            Ok(())
-        }
+    /// Sets reference id of the mate record.
+    /// Panics if argument is less than -1. This function does not update record flag.
+    pub fn set_mate_ref_id(&mut self, mate_ref_id: i32) {
+        assert!(mate_ref_id >= -1, "Mate reference id < -1");
+        self.mate_ref_id = mate_ref_id;
     }
 
-    /// Sets record 0-based start of the mate record. It cannot be less than -1.
-    pub fn set_mate_start(&mut self, mate_start: i32) -> Result<(), &'static str> {
-        if mate_start < -1 {
-            Err("Mate start < -1")
-        } else {
-            self.mate_start = mate_start;
-            Ok(())
-        }
+    /// Sets record 0-based start of the mate record. Panics if less than -1.
+    pub fn set_mate_start(&mut self, mate_start: i32) {
+        assert!(mate_start >= -1, "Mate start < -1");
+        self.mate_start = mate_start;
     }
 
     pub fn set_template_len(&mut self, template_len: i32) {
         self.template_len = template_len;
     }
 
-    /// Sets empty sequence and qualities.
-    pub fn reset_seq(&mut self) {
-        self.seq.clear();
-        self.qual.clear();
-    }
-
-    /// Sets a sequence for a record and removes record qualities.
-    /// Sequence should be in text format (for example `b"ACGT"`).
-    ///
-    /// The function returns an error if there was an unexpected nucleotide.
-    /// In that case the sequence and qualities are cleared.
-    pub fn set_seq<T: IntoIterator<Item = u8>>(&mut self, sequence: T) -> Result<(), String> {
-        self.seq.clear();
-        if let Err(e) = self.seq.extend_from_text(sequence) {
-            self.seq.clear();
-            self.qual.clear();
-            return Err(e);
-        }
-        self.qual.clear();
-        self.qual.extend_from_raw(std::iter::repeat(0xff_u8).take(self.seq.len()));
-        Ok(())
-    }
-
     /// Sets a sequence and qualities for a record. If you do not need to set qualities, use
-    /// [seq_seq](#method.set_seq). Both iterators should have the same length.
+    /// `std::iter::empty` for `qualities`. If qualities are non-empty,
+    /// both iterators should have the same length.
     ///
     /// # Arguments
     /// * sequence - in text format (for example `b"ACGT"`),
@@ -883,7 +870,7 @@ impl Record {
         }
         self.qual.clear();
         self.qual.extend_from_raw(qualities);
-        if self.seq.len() != self.qual.len() {
+        if self.qual.available() && self.seq.len() != self.qual.len() {
             let err = Err(format!("Trying to set sequence and qualities of different lengths: \
                 {} and {}", self.seq.len(), self.qual.len()));
             self.seq.clear();
@@ -894,33 +881,33 @@ impl Record {
         }
     }
 
-    /// Sets raw sequence (4 bits for a nucleotide) for a record and removes record qualities.
-    /// Argument `len` represents the number of nucleotides, not the number of bytes.
+    /// Sets raw sequence and qualities for a record. If you do not need to set qualities, use
+    /// `std::iter::empty` for `qualities`.
     ///
-    /// The function panics if the length does not match sequence length.
-    pub fn set_raw_seq(&mut self, raw_seq: &[u8], len: usize) {
-        assert!(len + 1 / 2 == raw_seq.len(), "Sequence length can be {} or {}, but not {}",
-            raw_seq.len() * 2 - 1, raw_seq.len() * 2, len);
-        let mut slice = &raw_seq[..];
-        self.seq.fill_from(&mut slice, len).unwrap();
-    }
-
-    /// Sets raw sequence (4 bits for a nucleotide) for a record and record qualities.
-    /// Qualities should be in raw format (without +33 added), and non-empty.
+    /// # Arguments
+    /// * sequence - in raw format: each nucleotide takes 4 bits,
+    /// * qualities - in raw format (without +33 added).
+    /// * len - number of nucleotides. If qualities are non-empty, they should have the same
+    /// number of bytes.
     ///
-    /// If the sequence and qualities length do not match,
-    /// the function returns an error clears the record sequence and qualities.
-    pub fn set_raw_seq_qual<U>(&mut self, raw_seq: &[u8], qualities: U) -> Result<(), String>
+    /// If the function returns an error, the sequence and qualities are cleared.
+    pub fn set_raw_seq_qual<U>(&mut self, raw_seq: &[u8], qualities: U, len: usize)
+        -> Result<(), String>
     where U: IntoIterator<Item = u8>,
     {
+        self.seq.clear();
         self.qual.clear();
         self.qual.extend_from_raw(qualities);
+        if self.qual.len() != len {
+            self.qual.clear();
+            return Err(format!("Expected qualities length: {}, got {}", len, self.qual.len()));
+        }
         let len = self.qual.len();
         if len + 1 / 2 == raw_seq.len() {
             self.seq.clear();
             self.qual.clear();
-            return Err(format!("Sequence length can be {} or {}, but not {}",
-                raw_seq.len() * 2 - 1, raw_seq.len() * 2, len));
+            return Err(format!("Expected raw sequence length: {}, got {}",
+                len + 1 / 2, raw_seq.len()));
         }
         let mut slice = &raw_seq[..];
         self.seq.fill_from(&mut slice, len).unwrap();
