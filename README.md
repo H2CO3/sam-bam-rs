@@ -1,4 +1,4 @@
-*bam* is a crate that allows to read and write BAM and BGZIP files, written completely in Rust.
+*bam* is a crate that allows to read and write BAM, SAM and BGZIP files, written completely in Rust.
 
 ## Why?
 
