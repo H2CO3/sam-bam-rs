@@ -349,7 +349,7 @@ impl Qualities {
     /// Returns `false` if raw qualities have length 0 or are filled with `0xff`.
     /// Only the first element is checked, O(1).
     pub fn available(&self) -> bool {
-        self.raw.len() > 0 && self.raw[0] != 0xff
+        !self.raw.is_empty() && self.raw[0] != 0xff
     }
 
     /// Returns vector with +33 added, O(n).

@@ -221,7 +221,7 @@ impl MultiThread {
                     },
                     Some(Task::Ready(_)) => true,
                     None => {
-                        if guard.blocks.len() == 0 {
+                        if guard.blocks.is_empty() {
                             return Ok(());
                         } else {
                             false
@@ -357,6 +357,10 @@ impl<T> Moveout<T> {
     fn set(&mut self, value: T) {
         self.value = Some(value);
     }
+
+    fn is_defined(&self) -> bool {
+        self.value.is_some()
+    }
 }
 
 impl<T> std::ops::Deref for Moveout<T> {
@@ -474,7 +478,7 @@ impl<W: Write> Writer<W> {
 
     /// Finishes writing, consumes the writer and returns inner stream.
     pub fn take_stream(mut self) -> W {
-        if !self.was_error {
+        if !self.was_error && self.block.is_defined() {
             let _ignore = self.finish();
         }
         self.was_error = true;
@@ -525,7 +529,7 @@ impl<W: Write> Write for Writer<W> {
 
 impl<W: Write> Drop for Writer<W> {
     fn drop(&mut self) {
-        if !self.was_error {
+        if !self.was_error && self.block.is_defined() {
             let _ignore = self.finish();
         }
     }

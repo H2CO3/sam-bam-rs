@@ -234,6 +234,11 @@ impl Cigar {
         self.0.len()
     }
 
+    /// Returns `true` if Cigar is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns raw Cigar. Each `u32` value represents `length << 4 | operation`, where
     /// operations are encoded from 0 to 8.
     pub fn raw(&self) -> &[u32] {
@@ -267,7 +272,7 @@ impl Cigar {
 
     /// Writes to `f` in a human readable format. Write `*` if empty.
     pub fn write_readable<W: Write>(&self, f: &mut W) -> io::Result<()> {
-        if self.len() == 0 {
+        if self.is_empty() {
             return f.write_u8(b'*');
         }
         for (len, op) in self.iter() {
@@ -452,7 +457,7 @@ impl<'a> Iterator for MatchingPairs<'a> {
 
 impl Display for Cigar {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-        if self.len() == 0 {
+        if self.is_empty() {
             return write!(f, "*");
         }
         for (len, op) in self.iter() {

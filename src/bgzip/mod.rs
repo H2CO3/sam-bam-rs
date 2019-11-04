@@ -198,7 +198,7 @@ impl Block {
     /// This function panics if the block contains compressed data
     /// (see [reset_compression](#method.reset_compression)).
     pub fn extend_contents(&mut self, buf: &[u8]) -> usize {
-        assert!(self.compressed.len() == 0, "Cannot update contents, as the block was compressed. \
+        assert!(self.compressed.is_empty(), "Cannot update contents, as the block was compressed. \
             Consider using reset_compression()");
         let consume_bytes = min(buf.len(), MAX_BLOCK_SIZE - self.uncompressed.len());
         self.uncompressed.extend(&buf[..consume_bytes]);
@@ -256,8 +256,8 @@ impl Block {
     /// [MAX_COMPRESSED_SIZE](constant.MAX_COMPRESSED_SIZE.html), the function returns
     /// `WriteZero`. Function panics if the block is already compressed.
     pub fn compress(&mut self, compression: flate2::Compression) -> io::Result<()> {
-        assert!(self.compressed.len() == 0, "Cannot compress an already compressed block");
-        if self.uncompressed.len() == 0 {
+        assert!(self.compressed.is_empty(), "Cannot compress an already compressed block");
+        if self.uncompressed.is_empty() {
             self.make_empty();
             return Ok(())
         }
@@ -279,7 +279,7 @@ impl Block {
 
     /// Writes the block to `stream`. The function panics if the block was not compressed.
     pub fn dump<W: Write>(&self, stream: &mut W) -> io::Result<()> {
-        assert!(self.compressed.len() > 0, "Cannot write an uncompressed block");
+        assert!(!self.compressed.is_empty(), "Cannot write an uncompressed block");
         let block_size = self.block_size().expect("Block size should be defined already") - 1;
         let block_header: &[u8; 18] = &[
             31, 139,   8,   4,  // ID1, ID2, Compression method, Flags
@@ -334,8 +334,8 @@ impl Block {
     /// Decompresses block contents. This function panics if the block was already decompressed or
     /// if the block is empty.
     pub fn decompress(&mut self) -> Result<(), BlockError> {
-        assert!(self.compressed.len() > 0, "Cannot decompress an empty block");
-        assert!(self.uncompressed.len() == 0, "Cannot decompress an already decompressed block");
+        assert!(!self.compressed.is_empty(), "Cannot decompress an empty block");
+        assert!(self.uncompressed.is_empty(), "Cannot decompress an already decompressed block");
 
         let compressed_size = self.compressed.len();
         let exp_uncompressed_size = (&self.compressed[compressed_size - 4..])
@@ -403,7 +403,7 @@ impl Block {
     pub fn split_contents(&mut self, first_size: usize, second_part: &mut [u8]) -> usize {
         assert!(self.uncompressed.len() >= first_size,
             "Cannot split a block with: size {} < {}", self.uncompressed.len(), first_size);
-        assert!(self.compressed.len() == 0, "Cannot split an already compressed block");
+        assert!(self.compressed.is_empty(), "Cannot split an already compressed block");
 
         let second_size = self.uncompressed.len() - first_size;
         second_part[..second_size].copy_from_slice(&self.uncompressed[first_size..]);
@@ -416,7 +416,7 @@ impl Block {
     /// or its uncompressed size is less than 2 bytes.
     pub fn split_into_two(&mut self) -> Block {
         assert!(self.uncompressed.len() > 1, "Cannot split a block with size < 2 bytes");
-        assert!(self.compressed.len() == 0, "Cannot split an already compressed block");
+        assert!(self.compressed.is_empty(), "Cannot split an already compressed block");
 
         let first_half_size = self.uncompressed.len() / 2;
         let mut second_half = Block::new();

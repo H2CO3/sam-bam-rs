@@ -351,11 +351,11 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
                     Some(Task::NotReady(_)) => false,
                     Some(Task::Interrupted(_)) => true,
                     None => {
-                        if guard.blocks.len() > 0 {
-                            false
-                        } else {
+                        if guard.blocks.is_empty() {
                             assert!(self.reached_end);
                             return Err(BlockError::EndOfStream);
+                        } else {
+                            false
                         }
                     },
                 };

@@ -548,7 +548,7 @@ impl Record {
 
     /// Replace Cigar by CG tag if Cigar has placeholder *kSmN*.
     fn replace_cigar_if_needed(&mut self) -> Result<(), Error> {
-        if self.cigar.len() > 0 && self.cigar.at(0) ==
+        if !self.cigar.is_empty() && self.cigar.at(0) ==
                 (self.seq.len() as u32, cigar::Operation::Soft) {
             if self.cigar.len() != 2 {
                 return Err(self.corrupt("Record contains invalid Cigar".to_string()));
@@ -628,7 +628,7 @@ impl Record {
     ///
     /// Returns 0 for unmapped records.
     pub fn calculate_end(&self) -> i32 {
-        if self.cigar.len() == 0 {
+        if self.cigar.is_empty() {
             return 0;
         }
 
@@ -759,7 +759,7 @@ impl Record {
                 stream.write_u32::<LittleEndian>(el)?;
             }
         } else {
-            let seq_len = if self.seq.len() != 0 {
+            let seq_len = if self.seq.available() {
                 self.seq.len() as u32
             } else {
                 self.cigar.calculate_query_len()
