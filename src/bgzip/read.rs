@@ -7,7 +7,11 @@
 //! Use [ReadBgzip](trait.ReadBgzip.html) trait if you wish to read blocks directly
 //! (not via `io::Read`).
 
-use std::sync::{Arc, Weak, Mutex, RwLock};
+use std::sync::{Arc, Weak, Mutex};
+use std::sync::atomic::{
+    AtomicBool,
+    Ordering::Relaxed,
+};
 use std::collections::VecDeque;
 use std::io::{self, Read, ErrorKind, Seek, SeekFrom};
 use std::thread;
@@ -54,12 +58,12 @@ struct WorkingQueue {
 struct Worker {
     worker_id: WorkerId,
     working_queue: Weak<Mutex<WorkingQueue>>,
-    is_finished: Arc<RwLock<bool>>,
+    is_finished: Arc<AtomicBool>,
 }
 
 impl Worker {
     fn run(&mut self) {
-        'outer: while !self.is_finished.read().map(|guard| *guard).unwrap_or(true) {
+        'outer: while !self.is_finished.load(Relaxed) {
             let queue = match self.working_queue.upgrade() {
                 Some(value) => value,
                 // Reader was dropped
@@ -265,7 +269,7 @@ impl<T: ReadBlock> DecompressBlock<T> for SingleThread {
 
 struct MultiThread {
     working_queue: Arc<Mutex<WorkingQueue>>,
-    is_finished: Arc<RwLock<bool>>,
+    is_finished: Arc<AtomicBool>,
     blocks_pool: ObjectPool<Block>,
     workers: Vec<thread::JoinHandle<()>>,
     reached_end: bool,
@@ -278,7 +282,7 @@ impl MultiThread {
     fn new(threads: u16) -> Self {
         assert!(threads > 0);
         let working_queue = Arc::new(Mutex::new(WorkingQueue::default()));
-        let is_finished = Arc::new(RwLock::new(false));
+        let is_finished = Arc::new(AtomicBool::new(false));
         let workers = (0..threads).map(|i| {
             let mut worker = Worker {
                 worker_id: WorkerId(i),
@@ -418,7 +422,7 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
 
 impl Drop for MultiThread {
     fn drop(&mut self) {
-        let _ignore = self.is_finished.write().map(|mut x| *x = true);
+        self.is_finished.store(true, Relaxed);
     }
 }
 
