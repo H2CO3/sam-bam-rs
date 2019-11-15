@@ -730,8 +730,8 @@ impl Record {
         } else {
             16 + 4 * self.cigar.len()
         };
-        let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len + self.seq.raw().len()
-            + self.qual.len() + self.tags.raw().len();
+        let total_block_len = 32 + self.name.len() + 1 + raw_cigar_len
+            + self.seq.raw().len() + self.seq.len() + self.tags.raw().len();
         stream.write_i32::<LittleEndian>(total_block_len as i32)?;
 
         stream.write_i32::<LittleEndian>(self.ref_id)?;
@@ -768,8 +768,14 @@ impl Record {
             let ref_len = (self.calculate_end() - self.start) as u32;
             stream.write_u32::<LittleEndian>(ref_len << 4 | 3)?;
         }
+
         stream.write_all(&self.seq.raw())?;
-        stream.write_all(&self.qual.raw())?;
+        if self.qual.raw().len() == self.seq.len() {
+            stream.write_all(&self.qual.raw())?;
+        } else {
+            write_iterator(stream, std::iter::repeat(0xff).take(self.seq.len()))?;
+        }
+
         stream.write_all(self.tags.raw())?;
 
         if self.cigar.len() > 0xffff {
@@ -898,17 +904,18 @@ impl Record {
         self.seq.clear();
         self.qual.clear();
         self.qual.extend_from_raw(qualities);
-        if self.qual.len() != len {
+        if self.qual.available() && self.qual.len() != len {
             self.qual.clear();
             return Err(format!("Expected qualities length: {}, got {}", len, self.qual.len()));
         }
-        let len = self.qual.len();
-        if len + 1 / 2 == raw_seq.len() {
+
+        if (len + 1) / 2 != raw_seq.len() {
             self.seq.clear();
             self.qual.clear();
             return Err(format!("Expected raw sequence length: {}, got {}",
-                len + 1 / 2, raw_seq.len()));
+                (len + 1) / 2, raw_seq.len()));
         }
+
         let mut slice = &raw_seq[..];
         self.seq.fill_from(&mut slice, len).unwrap();
         Ok(())

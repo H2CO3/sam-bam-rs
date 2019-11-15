@@ -67,6 +67,10 @@ impl BamWriterBuilder {
     }
 }
 
+/// Bam writer. Can be created using [from_path](#method.from_path) or using
+/// [BamWriterBuilder](struct.BamWriterBuilder.html).
+///
+/// Use [RecordWriter](../trait.RecordWriter.html) trait to write records.
 pub struct BamWriter<W: Write> {
     writer: bgzip::Writer<W>,
     header: Header,
