@@ -34,16 +34,16 @@ enum TaskStatus {
 }
 
 enum Task {
-    Ready((Block, Result<(), BlockError>)),
+    Ready(Block, Result<(), BlockError>),
     // Second element = true if the block is no longer needed.
-    NotReady((WorkerId, TaskStatus)),
+    NotReady(WorkerId, TaskStatus),
     Interrupted(Block),
 }
 
 impl Task {
     fn is_ready(&self) -> bool {
         match self {
-            Task::Ready((_, _)) => true,
+            Task::Ready(_, _) => true,
             _ => false,
         }
     }
@@ -72,7 +72,7 @@ impl Worker {
 
             let block = if let Ok(mut guard) = queue.lock() {
                 if let Some(block) = guard.blocks.pop_front() {
-                    guard.tasks.push_back(Task::NotReady((self.worker_id, TaskStatus::Waiting)));
+                    guard.tasks.push_back(Task::NotReady(self.worker_id, TaskStatus::Waiting));
                     Some(block)
                 } else {
                     None
@@ -93,10 +93,10 @@ impl Worker {
             if let Ok(mut guard) = queue.lock() {
                 for task in guard.tasks.iter_mut().rev() {
                     match task {
-                        Task::NotReady((worker_id, task_status))
+                        Task::NotReady(worker_id, task_status)
                                 if *worker_id == self.worker_id => {
                             let new_value = if *task_status == TaskStatus::Waiting {
-                                Task::Ready((block, res))
+                                Task::Ready(block, res)
                             } else {
                                 Task::Interrupted(block)
                             };
@@ -347,8 +347,8 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
         let (block, result) = loop {
             if let Ok(mut guard) = self.working_queue.lock() {
                 let need_pop = match guard.tasks.get(0) {
-                    Some(Task::Ready(_)) => true,
-                    Some(Task::NotReady(_)) => false,
+                    Some(Task::Ready(_, _)) => true,
+                    Some(Task::NotReady(_, _)) => false,
                     Some(Task::Interrupted(_)) => true,
                     None => {
                         if guard.blocks.is_empty() {
@@ -361,7 +361,7 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
                 };
                 if need_pop {
                     match guard.tasks.pop_front() {
-                        Some(Task::Ready(value)) => break value,
+                        Some(Task::Ready(block, res)) => break (block, res),
                         Some(Task::Interrupted(block)) => self.blocks_pool.bring(block),
                         _ => unreachable!(),
                     }
@@ -408,9 +408,9 @@ impl<T: ReadBlock> DecompressBlock<T> for MultiThread {
                 let old_tasks = std::mem::replace(&mut guard.tasks, VecDeque::new());
                 for task in old_tasks.into_iter() {
                     match task {
-                        Task::Ready((block, _)) => self.blocks_pool.bring(block),
-                        Task::NotReady((worker_id, _)) => guard.tasks.push_back(
-                            Task::NotReady((worker_id, TaskStatus::Interrupted))),
+                        Task::Ready(block, _) => self.blocks_pool.bring(block),
+                        Task::NotReady(worker_id, _) => guard.tasks.push_back(
+                            Task::NotReady(worker_id, TaskStatus::Interrupted)),
                         Task::Interrupted(block) => self.blocks_pool.bring(block),
                     }
                 }
