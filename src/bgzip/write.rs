@@ -483,7 +483,7 @@ impl<W: Write> Writer<W> {
         }
         self.was_error = true;
         unsafe {
-            std::mem::replace(&mut self.stream, std::mem::uninitialized())
+            std::mem::replace(&mut self.stream, std::mem::MaybeUninit::uninit().assume_init())
         }
     }
 }
