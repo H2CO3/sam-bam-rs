@@ -59,19 +59,19 @@ fn test_indexed_reader(path: &str, additional_threads: u16) {
     let output2 = format!("tests/data/tmp/samtools.ind_reader_t{}.sam", additional_threads);
     for i in 0..ITERATIONS {
         let ref_id = rng.gen_range(0, header.n_references());
-        let length = header.reference_len(ref_id).unwrap();
+        let length = header.reference_len(ref_id as u32).unwrap();
         let start = rng.gen_range(0, length);
         let end = rng.gen_range(start + 1, length + 1);
 
         let mut count = 0;
-        let ref_name = header.reference_name(ref_id).unwrap();
+        let ref_name = header.reference_name(ref_id as u32).unwrap();
         println!("    Iteration {}", i);
         println!("    Fetching {}:{}-{}", ref_name, start + 1, end);
 
         let timer = Instant::now();
         let mut sam_writer = bam::SamWriter::from_path(&output1, header.clone())
             .unwrap();
-        let mut viewer = reader.fetch(ref_id as u32, start, end).unwrap();
+        let mut viewer = reader.fetch(&bam::Region::new(ref_id as u32, start, end)).unwrap();
         loop {
             match viewer.read_into(&mut record) {
                 Ok(()) => {},

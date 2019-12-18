@@ -146,6 +146,7 @@ impl<'a> IntArrayView<'a> {
 
 /// Double-ended iterator over [IntArrayView](struct.IntArrayView.html)
 /// values converted into `i64`.
+#[derive(Clone)]
 pub struct IntArrayViewIter<'a> {
     chunks: std::slice::Chunks<'a, u8>,
     int_type: IntegerType,
@@ -173,6 +174,7 @@ impl<'a> ExactSizeIterator for IntArrayViewIter<'a> {}
 impl<'a> std::iter::FusedIterator for IntArrayViewIter<'a> {}
 
 /// Wrapper around raw float array stored in a tag.
+#[derive(Clone)]
 pub struct FloatArrayView<'a> {
     raw: &'a [u8],
 }
@@ -800,6 +802,7 @@ impl TagViewer {
 }
 
 /// Iterator over tags.
+#[derive(Clone)]
 pub struct TagIter<'a> {
     pos: usize,
     lengths: std::slice::Iter<'a, u32>,

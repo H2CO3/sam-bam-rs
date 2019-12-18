@@ -429,21 +429,21 @@ impl Header {
 
     /// Returns the name of the reference with `ref_id` (0-based).
     /// Returns None if there is no such reference
-    pub fn reference_name(&self, ref_id: usize) -> Option<&str> {
-        if ref_id > self.ref_names.len() {
+    pub fn reference_name(&self, ref_id: u32) -> Option<&str> {
+        if ref_id as usize > self.ref_names.len() {
             None
         } else {
-            Some(&self.ref_names[ref_id])
+            Some(&self.ref_names[ref_id as usize])
         }
     }
 
     /// Returns the length of the reference with `ref_id` (0-based).
     /// Returns None if there is no such reference
-    pub fn reference_len(&self, ref_id: usize) -> Option<u32> {
-        if ref_id > self.ref_lengths.len() {
+    pub fn reference_len(&self, ref_id: u32) -> Option<u32> {
+        if ref_id as usize > self.ref_lengths.len() {
             None
         } else {
-            Some(self.ref_lengths[ref_id])
+            Some(self.ref_lengths[ref_id as usize])
         }
     }
 

@@ -338,6 +338,7 @@ impl Cigar {
 }
 
 /// Double-ended iterator over CIGAR operations `(usize, Operation)`.
+#[derive(Clone)]
 pub struct CigarIter<'a> {
     parent: &'a Cigar,
     i: usize,

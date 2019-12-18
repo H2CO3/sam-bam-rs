@@ -267,6 +267,7 @@ impl Sequence {
 macro_rules! subseq_iter {
     ($name:ident, $ind_ty:ty, $fun:ident) => {
         /// Double-ended iterator over subsequence.
+        #[derive(Clone)]
         pub struct $name<'a> {
             parent: &'a Sequence,
             indices: $ind_ty,

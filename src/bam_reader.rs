@@ -207,6 +207,53 @@ impl IndexedReaderBuilder {
     }
 }
 
+/// Genomic coordinates, used in [struct.IndexedReader.html#method.fetch] and [struct.IndexedReader.html#method.pileup].
+/// `ref_id` is 0-based, `start-end` is 0-based half-open interval.
+#[derive(Clone, Debug)]
+pub struct Region {
+    ref_id: u32,
+    start: u32,
+    end: u32,
+}
+
+impl Region {
+    /// Creates new region. `ref_id` is 0-based, `start-end` is 0-based half-open interval.
+    pub fn new(ref_id: u32, start: u32, end: u32) -> Region {
+        assert!(start <= end, "Region: start should not be greater than end ({} > {})", start, end);
+        Region { ref_id, start, end }
+    }
+
+    pub fn ref_id(&self) -> u32 {
+        self.ref_id
+    }
+
+    pub fn start(&self) -> u32 {
+        self.start
+    }
+
+    pub fn end(&self) -> u32 {
+        self.end
+    }
+
+    pub fn len(&self) -> u32 {
+        self.end - self.start
+    }
+
+    pub fn set_ref_id(&mut self, ref_id: u32) {
+        self.ref_id = ref_id;
+    }
+
+    pub fn set_start(&mut self, start: u32) {
+        assert!(start <= self.end, "Region: start should not be greater than end ({} > {})", start, self.end);
+        self.start = start;
+    }
+
+    pub fn set_end(&mut self, end: u32) {
+        assert!(self.start <= end, "Region: start should not be greater than end ({} > {})", self.start, end);
+        self.end = end;
+    }
+}
+
 /// BAM file reader. In contrast to [BamReader](struct.BamReader.html) the `IndexedReader`
 /// allows to fetch records from arbitrary positions,
 /// but does not allow to read all records consecutively.
@@ -228,7 +275,7 @@ impl IndexedReaderBuilder {
 ///         .write_header(false)
 ///         .from_stream(output, reader.header().clone()).unwrap();
 ///
-///     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
+///     for record in reader.fetch(&bam::Region::new(2, 600_000, 700_000)).unwrap() {
 ///         writer.write(&record.unwrap()).unwrap();
 ///     }
 /// }
@@ -249,7 +296,7 @@ impl IndexedReaderBuilder {
 ///         .write_header(false)
 ///         .from_stream(output, reader.header().clone()).unwrap();
 ///
-///     let mut viewer = reader.fetch(1, 100_000, 200_000).unwrap();
+///     let mut viewer = reader.fetch(&bam::Region::new(1, 100_000, 200_000)).unwrap();
 ///     let mut record = bam::Record::new();
 ///     loop {
 ///         match viewer.read_into(&mut record) {
@@ -321,41 +368,34 @@ impl<R: Read + Seek> IndexedReader<R> {
         Ok(Self { reader, header, index })
     }
 
-    /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
-    /// and intersecting half-open interval `[start-end)`.
-    pub fn fetch<'a>(&'a mut self, ref_id: u32, start: u32, end: u32)
-            -> Result<RegionViewer<'a, bgzip::SeekReader<R>>> {
-        self.fetch_by(ref_id, start, end, |_| true)
+    /// Returns an iterator over records aligned to the [reference region](struct.Region.html).
+    pub fn fetch<'a>(&'a mut self, region: &Region) -> Result<RegionViewer<'a, bgzip::SeekReader<R>>> {
+        self.fetch_by(region, |_| true)
     }
 
-    /// Returns an iterator over records aligned to the reference `ref_id` (0-based),
-    /// and intersecting half-open interval `[start-end)`.
+    /// Returns an iterator over records aligned to the [reference region](struct.Region.html).
     ///
     /// Records will be filtered by `predicate`. It helps to slightly reduce fetching time,
     /// as some records will be removed without allocating new memory and without calculating
     /// alignment length.
-    pub fn fetch_by<'a, F>(&'a mut self, ref_id: u32, start: u32, end: u32, predicate: F)
+    pub fn fetch_by<'a, F>(&'a mut self, region: &Region, predicate: F)
         -> Result<RegionViewer<'a, bgzip::SeekReader<R>>>
     where F: 'static + Fn(&record::Record) -> bool
     {
-        if start > end {
-            return Err(Error::new(InvalidInput,
-                format!("Failed to fetch records: start > end ({} > {})", start, end)));
-        }
-        match self.header.reference_len(ref_id as usize) {
+        match self.header.reference_len(region.ref_id()) {
             None => return Err(Error::new(InvalidInput,
-                format!("Failed to fetch records: out of bounds reference {}", ref_id))),
-            Some(len) if len < end => return Err(Error::new(InvalidInput,
-                format!("Failed to fetch records: end > reference length ({} > {})", end, len))),
+                format!("Failed to fetch records: out of bounds reference {}", region.ref_id()))),
+            Some(len) if len < region.end() => return Err(Error::new(InvalidInput,
+                format!("Failed to fetch records: end > reference length ({} > {})", region.end(), len))),
             _ => {},
         }
 
-        let chunks = self.index.fetch_chunks(ref_id, start as i32, end as i32);
+        let chunks = self.index.fetch_chunks(region.ref_id(), region.start() as i32, region.end() as i32);
         self.reader.set_chunks(chunks);
         Ok(RegionViewer {
             reader: &mut self.reader,
-            start: start as i32,
-            end: end as i32,
+            start: region.start() as i32,
+            end: region.end() as i32,
             predicate: Box::new(predicate),
         })
     }

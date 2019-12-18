@@ -42,7 +42,7 @@ fn main() {
         .write_header(false)
         .from_stream(output, reader.header().clone()).unwrap();
 
-    for record in reader.fetch(2, 600_000, 700_000).unwrap() {
+    for record in reader.fetch(&bam::Region::new(2, 600_000, 700_000)).unwrap() {
         let record = record.unwrap();
         writer.write(&record).unwrap();
     }

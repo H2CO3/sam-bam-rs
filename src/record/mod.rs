@@ -699,7 +699,7 @@ impl Record {
         if self.ref_id < 0 {
             f.write_all(b"*\t")?;
         } else {
-            write!(f, "{}\t", header.reference_name(self.ref_id as usize)
+            write!(f, "{}\t", header.reference_name(self.ref_id as u32)
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }
@@ -711,7 +711,7 @@ impl Record {
         } else if self.mate_ref_id == self.ref_id {
             f.write_all(b"\t=\t")?;
         } else {
-            write!(f, "\t{}\t", header.reference_name(self.mate_ref_id as usize)
+            write!(f, "\t{}\t", header.reference_name(self.mate_ref_id as u32)
                 .ok_or_else(|| io::Error::new(InvalidData,
                 "Record has a reference id not in the header"))?)?;
         }

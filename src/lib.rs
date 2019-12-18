@@ -37,7 +37,7 @@
 //!         .write_header(false)
 //!         .from_stream(output, reader.header().clone()).unwrap();
 //!
-//!     for record in reader.fetch(2, 600_000, 700_000).unwrap() {
+//!     for record in reader.fetch(&bam::Region::new(2, 600_000, 700_000)).unwrap() {
 //!         let record = record.unwrap();
 //!         writer.write(&record).unwrap();
 //!     }
@@ -112,9 +112,11 @@ pub mod bam_reader;
 pub mod bam_writer;
 pub mod header;
 pub mod sam;
+pub mod pileup;
 
 pub use bam_reader::IndexedReader;
 pub use bam_reader::BamReader;
+pub use bam_reader::Region;
 pub use bam_writer::BamWriter;
 
 pub use header::Header;
