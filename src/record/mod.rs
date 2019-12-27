@@ -271,6 +271,16 @@ impl Display for Error {
     }
 }
 
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            Error::NoMoreRecords => None,
+            Error::Corrupted(_) => None,
+            Error::Truncated(ref e) => Some(e),
+        }
+    }
+}
+
 pub(crate) unsafe fn resize<T>(v: &mut Vec<T>, new_len: usize) {
     if v.capacity() < new_len {
         v.reserve(new_len - v.len());
@@ -408,7 +418,7 @@ impl Record {
                 })
             },
         };
-        
+
         let ref_id = stream.read_i32::<LittleEndian>()?;
         if ref_id < -1 {
             return Err(self.corrupt("Reference id < 1".to_string()));
@@ -460,8 +470,7 @@ impl Record {
         self.qual.fill_from(stream, qual_len)?;
 
         let seq_len = (qual_len + 1) / 2;
-        let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize
-            - seq_len - qual_len;
+        let remaining_size = block_size - 32 - name_len as usize - 4 * cigar_len as usize - seq_len - qual_len;
         self.tags.fill_from(stream, remaining_size)?;
         self.replace_cigar_if_needed()?;
 
@@ -502,7 +511,10 @@ impl Record {
             .map_err(|_| self.corrupt(format!("Cannot convert MAPQ '{}' to int", mapq)))?;
         self.set_mapq(mapq);
 
-        self.set_cigar(split.try_next("CIGAR")?.bytes()).map_err(|e| self.corrupt(e))?;
+        let maybe_cigar = split.try_next("CIGAR")?.bytes();
+        if maybe_cigar.clone().next() != Some(b'*') {
+            self.set_cigar(maybe_cigar).map_err(|e| self.corrupt(e))?;
+        }
 
         let rnext = split.try_next("mate reference name (RNEXT)")?;
         if rnext == "*" {
@@ -751,7 +763,7 @@ impl Record {
         stream.write_i32::<LittleEndian>(self.mate_ref_id)?;
         stream.write_i32::<LittleEndian>(self.mate_start)?;
         stream.write_i32::<LittleEndian>(self.template_len)?;
-        
+
         stream.write_all(&self.name)?;
         stream.write_u8(0)?;
         if self.cigar.len() <= 0xffff {
